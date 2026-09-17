@@ -16,7 +16,7 @@
 
 로컬 시험:  python3 -m unittest test_pipeline -v
 """
-import base64, hashlib, json, math, os, re, sys, time, urllib.parse, urllib.request
+import base64, hashlib, json, math, os, re, sys, time, urllib.parse, urllib.request, urllib.error
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
@@ -121,16 +121,28 @@ def compute(bars):
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
 KR_CODE = re.compile(r"^[0-9A-Z]{6}$")          # 숫자 6자리뿐 아니라 0153K0 같은 새 형식도 허용
 
-def _get(url, params=None, retries=3):
+_HOST_BLOCKS = {}
+class ProviderHTTPError(ValueError):
+    def __init__(self, code, cached=False):
+        self.code = code
+        super().__init__(f"HTTP {code}" + (" (이번 실행 추가 요청 중지)" if cached else ""))
+
+def _get(url, params=None, retries=2):
+    host = urllib.parse.urlsplit(url).hostname
+    if host in _HOST_BLOCKS: raise ProviderHTTPError(_HOST_BLOCKS[host], True)
     if params: url += "?" + urllib.parse.urlencode(params, safe="%")
-    last = None
-    for i in range(retries):
+    for i in range(min(retries, 2)):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=25) as r:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=10) as r:
                 return r.read().decode("utf-8")
-        except Exception as e:
-            last = e; time.sleep(1.5*(i+1))
-    raise last
+        except urllib.error.HTTPError as e:
+            code = e.code
+            e.close()
+            if code in (401,403,429): _HOST_BLOCKS[host] = code
+            if code < 500 or i == min(retries,2)-1: raise ProviderHTTPError(code) from None
+        except (urllib.error.URLError, TimeoutError):
+            if i == min(retries,2)-1: raise ValueError("네트워크 연결 실패 또는 10초 시간 초과") from None
+        if i < min(retries,2)-1: time.sleep(1)
 
 def yahoo(symbol, market):
     raw = _get("https://query1.finance.yahoo.com/v8/finance/chart/"+urllib.parse.quote(symbol, safe=""),
@@ -235,7 +247,7 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
         elif y_bars:
             bars, source, empty = y_bars, "yahoo", y_empty
         else:
-            raise ValueError("야후 실패: "+(type(err).__name__ if err else "응답 없음"))
+            raise ValueError("야후 실패: "+(str(err) if isinstance(err, ProviderHTTPError) else type(err).__name__ if err else "응답 없음"))
         rec["providerName"] = y_meta.get("name", "")
     if len(bars) < 2: raise ValueError("일봉 부족")
     rec.update({"symbol": sym or code, "source": source, "emptyBarsSkipped": empty,
@@ -248,7 +260,9 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
 DEFAULT_LIMITS = {"은": 10, "비트코인": 10, "고변동성": 12, "바이오": 25, "초기 바이오": 6, "빅테크": 25}
 CLASS_TAGS = {"국내 개별주", "미국주식", "국내 지수·배당", "국내 중소형", "배당"}
 
-def sec_key(it): return f"{it.get('mkt','KR')}:{(it.get('code') or '').strip()}"
+def sec_key(it):
+    code = (it.get('code') or '').strip()
+    return f"{it.get('mkt','KR')}:{code}" if code else f"missing:{it.get('id') or it.get('name')}"
 
 def parse_holdings(obj):
     """HOLDINGS_JSON 은 (a) 종목 목록, 또는 (b) {"holdings":[...], "limits":{태그:한도%}, "usdkrw":환율}.
@@ -556,6 +570,7 @@ def load_state(path, password):
         print("이전 상태를 읽지 못해 비교를 건너뜁니다:", type(e).__name__); return None
 
 def main(site_dir="site", state_dir="state", now=None):
+    _HOST_BLOCKS.clear()
     password = os.environ.get("REPORT_PASSWORD", "").strip()
     if len(password) < 8:
         raise SystemExit("REPORT_PASSWORD 비밀이 없거나 8자 미만입니다. 평문 게시는 지원하지 않으므로 아무 파일도 만들지 않고 중단합니다.")

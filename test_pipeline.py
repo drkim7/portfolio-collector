@@ -181,3 +181,20 @@ class EndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class NetworkAndIdentity(unittest.TestCase):
+    def test_missing_codes_stay_separate(self):
+        h=[dict(HOLD[0],id='a',code='',name='A'),dict(HOLD[0],id='b',code='',name='B')]
+        self.assertEqual(len(P.aggregate(h)),2)
+    def test_denied_host_stops_without_leaking_url(self):
+        from unittest.mock import patch
+        import urllib.error, importlib.util
+        spec=importlib.util.spec_from_file_location('isolated_pipeline',P.__file__)
+        mod=importlib.util.module_from_spec(spec);spec.loader.exec_module(mod)
+        for code in (401,403,429):
+            mod._HOST_BLOCKS.clear()
+            with patch.object(mod.urllib.request,'urlopen',side_effect=urllib.error.HTTPError('https://example.test/private-code?key=secret',code,'fail',{},None)) as call:
+                for _ in range(2):
+                    with self.assertRaises(mod.ProviderHTTPError) as e: mod._get('https://example.test/private-code',{'key':'secret'})
+                    self.assertIn(str(code),str(e.exception));self.assertNotIn('secret',str(e.exception));self.assertNotIn('private-code',str(e.exception))
+                self.assertEqual(call.call_count,1)
