@@ -31,6 +31,8 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main # Re-runs must load the latest encrypted state, not an old snapshot.
 
       - uses: actions/setup-python@v5
         with:
