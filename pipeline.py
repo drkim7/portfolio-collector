@@ -16,6 +16,7 @@
 
 로컬 시험:  python3 -m unittest test_pipeline -v
 """
+import csv, io
 import base64, hashlib, json, math, os, re, sys, time, urllib.parse, urllib.request, urllib.error
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
@@ -164,6 +165,27 @@ def yahoo(symbol, market):
             for j, t in enumerate(r.get("timestamp") or [])]
     return bars, {"name": meta.get("longName") or meta.get("shortName") or "", "exchange": meta.get("fullExchangeName") or ""}
 
+def stooq(symbol, now=None):
+    """US daily CSV; never infer a different ticker or combine provider histories."""
+    if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,14}", symbol):
+        raise ValueError("미국 심볼 형식 오류")
+    now = now or datetime.now(UTC)
+    raw = _get("https://stooq.com/q/d/l/", {
+        "s": symbol.lower()+".us", "i": "d",
+        "d1": (now-timedelta(days=730)).strftime("%Y%m%d"),
+        "d2": now.astimezone(NYT).strftime("%Y%m%d")})
+    reader = csv.DictReader(io.StringIO(raw.lstrip("\ufeff")))
+    if reader.fieldnames != ["Date", "Open", "High", "Low", "Close", "Volume"]:
+        raise ValueError("Stooq 일봉 CSV 응답 없음")
+    rows = []
+    try:
+        for r in reader:
+            rows.append({"date": r["Date"], **{k: float(r[v]) for k, v in
+                {"open":"Open", "high":"High", "low":"Low", "close":"Close", "volume":"Volume"}.items()}})
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("Stooq 일봉 형식 오류") from None
+    return rows
+
 GOV = "https://apis.data.go.kr/1160100/"
 def gov(code, is_etf, key):
     path = "GetSecuritiesProductInfoService_V2/getETFPriceInfo_V2" if is_etf else "GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2"
@@ -229,8 +251,24 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
     if mkt == "KR" and not KR_CODE.match(code): raise ValueError("국내 코드 형식 아님")
     bars, source, sym, empty = [], None, None, 0
     if mkt == "US":
-        raw, meta = yahoo(code, "US"); bars, empty = clean(raw, "US", now); source, sym = "yahoo", code
-        rec["providerName"] = meta["name"]
+        try:
+            raw, meta = yahoo(code, "US")
+            bars, empty = clean(raw, "US", now)
+            if len(bars) < 2: raise ValueError("일봉 부족")
+            source, sym = "yahoo", code
+            rec["providerName"] = meta["name"]
+        except Exception as e:
+            reason = str(e) if isinstance(e, ProviderHTTPError) else type(e).__name__
+            try:
+                bars, empty = clean(stooq(code, now), "US", now)
+                if len(bars) < 2: raise ValueError("일봉 부족")
+                if (now or datetime.now(UTC)).astimezone(NYT).date() - datetime.fromisoformat(bars[-1]["date"]).date() > timedelta(days=7):
+                    raise ValueError("Stooq 최신 일봉 지연")
+            except Exception as fallback:
+                safe = str(fallback) if isinstance(fallback, ProviderHTTPError) else type(fallback).__name__
+                raise ValueError("야후: " + reason + " / Stooq: " + safe) from None
+            source, sym = "stooq", code
+            rec["warnings"].append("야후 수집 실패로 Stooq 일봉 사용. 제공처별 과거 가격 조정 방식이 다를 수 있음")
     else:
         gov_bars = []
         gov_failure = "키 미설정" if not gov_key else "유효 일봉 없음"

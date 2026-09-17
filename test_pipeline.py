@@ -240,5 +240,26 @@ class GovernmentHistoricalGap(unittest.TestCase):
             with self.assertRaises(ValueError):
                 P.fetch_security('005930', 'KR', False, 'test-key', NOW)
 
+class USFallback(unittest.TestCase):
+    def test_stooq_contract(self):
+        from unittest.mock import patch
+        good = "Date,Open,High,Low,Close,Volume\n2026-09-14,100,110,90,105,120\n"
+        with patch.object(P, '_get', return_value=good) as call:
+            rows = P.stooq('AAPL', NOW)
+            self.assertEqual(rows[0]['close'],105)
+            self.assertEqual(call.call_args.args[1]['s'], 'aapl.us')
+        for bad in ('<html>verify</html>', 'No data', good.replace(',105,', ',bad,')):
+            with patch.object(P, '_get', return_value=bad):
+                with self.assertRaises(ValueError): P.stooq('AAPL', NOW)
+    def test_rate_limit_uses_separate_validated_history(self):
+        from unittest.mock import patch
+        rows = [dict(date=(NOW-timedelta(days=n)).date().isoformat(), open=100, high=110, low=90, close=105, volume=100) for n in (3,2,1)]
+        with patch.object(P, 'yahoo', side_effect=P.ProviderHTTPError(429)), patch.object(P, 'stooq', return_value=rows):
+            rec=P.fetch_security('AAPL','US',False,'',NOW)
+            self.assertEqual(rec['source'],'stooq'); self.assertTrue(rec['warnings'])
+        rows[-1]['high']=1
+        with patch.object(P, 'yahoo', side_effect=P.ProviderHTTPError(429)), patch.object(P, 'stooq', return_value=rows):
+            with self.assertRaises(ValueError): P.fetch_security('AAPL','US',False,'',NOW)
+
 if __name__ == '__main__':
     unittest.main()
