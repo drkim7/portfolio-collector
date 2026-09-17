@@ -122,6 +122,7 @@ UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit
 KR_CODE = re.compile(r"^[0-9A-Z]{6}$")          # 숫자 6자리뿐 아니라 0153K0 같은 새 형식도 허용
 
 _HOST_BLOCKS = {}
+_HOST_TIMEOUTS = {}
 class ProviderHTTPError(ValueError):
     def __init__(self, code, cached=False):
         self.code = code
@@ -129,6 +130,7 @@ class ProviderHTTPError(ValueError):
 
 def _get(url, params=None, retries=2):
     host = urllib.parse.urlsplit(url).hostname
+    if _HOST_TIMEOUTS.get(host,0) >= 2: raise ValueError("제공자 연결 실패 반복: 이번 실행 추가 요청 중지")
     if host in _HOST_BLOCKS: raise ProviderHTTPError(_HOST_BLOCKS[host], True)
     if params: url += "?" + urllib.parse.urlencode(params, safe="%")
     for i in range(min(retries, 2)):
@@ -141,6 +143,7 @@ def _get(url, params=None, retries=2):
             if code in (401,403,429): _HOST_BLOCKS[host] = code
             if code < 500 or i == min(retries,2)-1: raise ProviderHTTPError(code) from None
         except (urllib.error.URLError, TimeoutError):
+            _HOST_TIMEOUTS[host] = _HOST_TIMEOUTS.get(host,0)+1
             if i == min(retries,2)-1: raise ValueError("네트워크 연결 실패 또는 10초 시간 초과") from None
         if i < min(retries,2)-1: time.sleep(1)
 
@@ -578,6 +581,7 @@ def load_state(path, password):
 
 def main(site_dir="site", state_dir="state", now=None):
     _HOST_BLOCKS.clear()
+    _HOST_TIMEOUTS.clear()
     password = os.environ.get("REPORT_PASSWORD", "").strip()
     if len(password) < 8:
         raise SystemExit("REPORT_PASSWORD 비밀이 없거나 8자 미만입니다. 평문 게시는 지원하지 않으므로 아무 파일도 만들지 않고 중단합니다.")
