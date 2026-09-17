@@ -236,7 +236,18 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
         gov_failure = "키 미설정" if not gov_key else "유효 일봉 없음"
         if gov_key:
             try:
-                gov_bars, empty = clean(gov(code, is_etf, gov_key), "KR", now)
+                raw_gov = gov(code, is_etf, gov_key)
+                try:
+                    gov_bars, empty = clean(raw_gov, "KR", now)
+                except ValueError as e:
+                    # Never bridge a malformed historical candle: retain only the
+                    # validated consecutive suffix after it, and disclose truncation.
+                    bad = re.fullmatch(r"(?:고가·저가 불일치|일부 값 누락|거래량 값 이상) (\d{4}-\d{2}-\d{2})", str(e))
+                    if not bad: raise
+                    recent = [b for b in raw_gov if _day(b["date"]) > bad.group(1)]
+                    gov_bars, empty = clean(recent, "KR", now)
+                    if len(gov_bars) < 2: raise e
+                    rec["warnings"].append("공공데이터 과거 일봉 오류: " + bad.group(1) + "까지 제외. 이후 " + str(len(gov_bars)) + "봉만으로 계산")
                 source = "data.go.kr"
                 if len(gov_bars) >= 2:
                     rec.update({"symbol":code,"source":source,"emptyBarsSkipped":empty,"indicators":compute(gov_bars),"bars":gov_bars[-BARS_KEEP:]})

@@ -223,5 +223,22 @@ class GovernmentV2Contract(unittest.TestCase):
                     self.assertEqual(params['likeSrtnCd'], code)
                     self.assertEqual(params['resultType'], 'json')
 
+class GovernmentHistoricalGap(unittest.TestCase):
+    def test_bad_historical_bar_truncates_without_bridging_or_hiding_latest_error(self):
+        from unittest.mock import patch
+        rows = [dict(date=d, open=100, high=110, low=90, close=105, volume=10)
+                for d in ('20260710', '20260713', '20260714', '20260715')]
+        rows[1]['high'] = 1
+        with patch.object(P, 'gov', return_value=rows), patch.object(P, 'yahoo') as y:
+            rec = P.fetch_security('005930', 'KR', False, 'test-key', NOW)
+            self.assertEqual([b['date'] for b in rec['bars']], ['2026-07-14', '2026-07-15'])
+            self.assertTrue(rec['warnings'])
+            self.assertIsNone(rec['indicators']['high252ExclToday'])
+            y.assert_not_called()
+        rows[-1]['high'] = 1
+        with patch.object(P, 'gov', return_value=rows), patch.object(P, 'yahoo', side_effect=ValueError('unavailable')):
+            with self.assertRaises(ValueError):
+                P.fetch_security('005930', 'KR', False, 'test-key', NOW)
+
 if __name__ == '__main__':
     unittest.main()
