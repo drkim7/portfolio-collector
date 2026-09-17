@@ -240,7 +240,7 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
                     for known in ("SERVICE_KEY_IS_NOT_REGISTERED_ERROR", "SERVICE_ACCESS_DENIED_ERROR", "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR", "SERVICE_KEY_IS_NOT_REGISTERED", "DEADLINE_HAS_EXPIRED_ERROR"):
                         if known in str(e): gov_failure += " " + known; break
                 else: gov_failure = type(e).__name__ + " (응답 형식 또는 일봉 검증 실패)"
-                rec["warnings"].append("공공데이터: " + gov_failure)
+                rec["warnings"].append("공공데이터 실패: " + gov_failure)
         y_bars, y_meta, err = [], {}, None
         for suf in (".KS", ".KQ"):
             try:
