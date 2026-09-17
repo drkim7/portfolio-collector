@@ -129,7 +129,9 @@ class ProviderHTTPError(ValueError):
         super().__init__(f"HTTP {code}" + (" (이번 실행 추가 요청 중지)" if cached else ""))
 
 def _get(url, params=None, retries=2):
-    host = urllib.parse.urlsplit(url).hostname
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.hostname
+    if host == "apis.data.go.kr": host += parsed.path.rsplit("/",1)[0]
     if _HOST_TIMEOUTS.get(host,0) >= 2: raise ValueError("제공자 연결 실패 반복: 이번 실행 추가 요청 중지")
     if host in _HOST_BLOCKS: raise ProviderHTTPError(_HOST_BLOCKS[host], True)
     if params: url += "?" + urllib.parse.urlencode(params, safe="%")
@@ -162,9 +164,9 @@ def yahoo(symbol, market):
             for j, t in enumerate(r.get("timestamp") or [])]
     return bars, {"name": meta.get("longName") or meta.get("shortName") or "", "exchange": meta.get("fullExchangeName") or ""}
 
-GOV = "https://apis.data.go.kr/1160100/service/"
+GOV = "https://apis.data.go.kr/1160100/"
 def gov(code, is_etf, key):
-    path = "GetSecuritiesProductInfoService/getETFPriceInfo" if is_etf else "GetStockSecuritiesInfoService/getStockPriceInfo"
+    path = "service/GetSecuritiesProductInfoService/getETFPriceInfo" if is_etf else "GetStockSecuritiesInfoService_V2/getStockPriceInfo"
     rows = []
     for page in range(1, 11):
         raw = _get(GOV+path, {"serviceKey": urllib.parse.unquote(key), "resultType": "json", "numOfRows": 600, "pageNo": page,
@@ -236,12 +238,16 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
             try:
                 gov_bars, empty = clean(gov(code, is_etf, gov_key), "KR", now)
                 source = "data.go.kr"
+                if len(gov_bars) >= 2:
+                    rec.update({"symbol":code,"source":source,"emptyBarsSkipped":empty,"indicators":compute(gov_bars),"bars":gov_bars[-BARS_KEEP:]})
+                    return rec
             except Exception as e:
                 if isinstance(e, ProviderHTTPError): gov_failure = str(e)
                 elif isinstance(e, ValueError) and "공공데이터 인증 오류" in str(e):
                     gov_failure = "인증 응답 오류"
                     for known in ("SERVICE_KEY_IS_NOT_REGISTERED_ERROR", "SERVICE_ACCESS_DENIED_ERROR", "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR", "SERVICE_KEY_IS_NOT_REGISTERED", "DEADLINE_HAS_EXPIRED_ERROR"):
                         if known in str(e): gov_failure += " " + known; break
+                elif str(e) in ("네트워크 연결 실패 또는 10초 시간 초과", "제공자 연결 실패 반복: 이번 실행 추가 요청 중지"): gov_failure = str(e)
                 else: gov_failure = type(e).__name__ + " (응답 형식 또는 일봉 검증 실패)"
                 rec["warnings"].append("공공데이터 실패: " + gov_failure)
         y_bars, y_meta, err = [], {}, None
