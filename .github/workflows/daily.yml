@@ -47,6 +47,7 @@ jobs:
           HOLDINGS_JSON: ${{ secrets.HOLDINGS_JSON }}      # 보유내역 (비밀)
           REPORT_PASSWORD: ${{ secrets.REPORT_PASSWORD }}  # 없거나 8자 미만이면 아무것도 만들지 않고 중단
           DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}    # 선택. 공공데이터포털 키
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }} # 미국 시세용
           USDKRW: ${{ vars.USDKRW }}                       # 선택. 비우면 보유내역의 usdkrw 또는 1380
         run: python3 pipeline.py
         # 전 종목 실패 → 종료 코드 1 → 아래 단계 실행 안 됨 → 이전 페이지·이전 상태 유지

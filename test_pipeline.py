@@ -240,26 +240,34 @@ class GovernmentHistoricalGap(unittest.TestCase):
             with self.assertRaises(ValueError):
                 P.fetch_security('005930', 'KR', False, 'test-key', NOW)
 
-class USFallback(unittest.TestCase):
-    def test_stooq_contract(self):
+class AuthenticatedUSData(unittest.TestCase):
+    def response(self):
+        return {'meta': {'symbol': 'AAPL', 'currency': 'USD'}, 'values': [
+            {'datetime': (NOW-timedelta(days=n)).date().isoformat(), 'open':'100', 'high':'110', 'low':'90', 'close':'105', 'volume':'123'} for n in (1,2,3)]}
+    def test_authenticated_route_and_missing_volume(self):
         from unittest.mock import patch
-        good = "Date,Open,High,Low,Close,Volume\n2026-09-14,100,110,90,105,120\n"
-        with patch.object(P, '_get', return_value=good) as call:
-            rows = P.stooq('AAPL', NOW)
-            self.assertEqual(rows[0]['close'],105)
-            self.assertEqual(call.call_args.args[1]['s'], 'aapl.us')
-        for bad in ('<html>verify</html>', 'No data', good.replace(',105,', ',bad,')):
-            with patch.object(P, '_get', return_value=bad):
-                with self.assertRaises(ValueError): P.stooq('AAPL', NOW)
-    def test_rate_limit_uses_separate_validated_history(self):
+        d=self.response(); d['values'][0].pop('volume')
+        with patch.dict(os.environ, {'TWELVE_DATA_API_KEY':'fake-key'}), patch.object(P,'_get',return_value=json.dumps(d)) as req, patch.object(P,'yahoo') as y, patch.object(P.time,'sleep'):
+            r=P.fetch_security('AAPL','US',False,'',NOW)
+            self.assertEqual(r['source'],'twelvedata'); self.assertIsNone(r['bars'][-1]['volume']); y.assert_not_called()
+            self.assertEqual(req.call_args.args[1]['country'],'United States')
+    def test_rejects_wrong_identity_and_does_not_expose_error_body(self):
         from unittest.mock import patch
-        rows = [dict(date=(NOW-timedelta(days=n)).date().isoformat(), open=100, high=110, low=90, close=105, volume=100) for n in (3,2,1)]
-        with patch.object(P, 'yahoo', side_effect=P.ProviderHTTPError(429)), patch.object(P, 'stooq', return_value=rows):
-            rec=P.fetch_security('AAPL','US',False,'',NOW)
-            self.assertEqual(rec['source'],'stooq'); self.assertTrue(rec['warnings'])
-        rows[-1]['high']=1
-        with patch.object(P, 'yahoo', side_effect=P.ProviderHTTPError(429)), patch.object(P, 'stooq', return_value=rows):
-            with self.assertRaises(ValueError): P.fetch_security('AAPL','US',False,'',NOW)
+        for d in (dict(self.response(),meta={'symbol':'OTHER','currency':'USD'}), {'status':'error','code':401,'message':'secret-key and private symbol'}):
+            P._HOST_BLOCKS.clear()
+            with patch.object(P,'_get',return_value=json.dumps(d)), patch.object(P.time,'sleep'):
+                with self.assertRaises(ValueError) as e: P.twelvedata('AAPL','fake-key')
+                self.assertNotIn('secret-key',str(e.exception)); self.assertNotIn('private',str(e.exception))
+        P._HOST_BLOCKS.clear()
+    def test_quota_error_stops_further_requests(self):
+        from unittest.mock import patch
+        P._HOST_BLOCKS.clear()
+        with patch.object(P,'_get',return_value=json.dumps({'status':'error','code':429})), patch.object(P.time,'sleep'):
+            with self.assertRaises(ValueError): P.twelvedata('AAPL','fake-key')
+        with patch.object(P,'_get') as req:
+            with self.assertRaises(P.ProviderHTTPError): P.twelvedata('AAPL','fake-key')
+            req.assert_not_called()
+        P._HOST_BLOCKS.clear()
 
 if __name__ == '__main__':
     unittest.main()

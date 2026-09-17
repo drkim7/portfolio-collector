@@ -26,3 +26,13 @@
 
 ## 검증
 `python3 -m unittest test_pipeline` (cryptography 필요). 앱 저장소의 `node scripts/check-collector-integration.mjs`는 Python 암호문을 실제 앱에서 복호화·검증하고 지표를 대조합니다.
+
+## 미국 시세 인증 API
+미국 종목은 `TWELVE_DATA_API_KEY`가 있으면 Twelve Data의 미국 USD 일봉을 사용합니다. 키가 없으면 기존 Yahoo를 사용합니다. 공개 Stooq 경로는 실환경 검증에 실패하여 제거했습니다.
+
+1. https://twelvedata.com/ 에서 계정을 만들고 API key를 발급받습니다. 사용 요금제에서 필요한 미국 주식·ETF의 time_series 접근이 가능한지 확인하세요. 전체 종목의 무료 제공 여부는 아직 확인되지 않았습니다.
+2. https://github.com/drkim7/portfolio-collector/settings/secrets/actions 에서 New repository secret을 누릅니다.
+3. Name은 `TWELVE_DATA_API_KEY`, Secret은 발급받은 키로 저장합니다. 키를 채팅에 붙여넣지 마세요.
+4. Actions → 보유 종목 점검 → Run workflow로 main의 최신 코드를 실행합니다. 과거 실행의 Re-run은 과거 코드를 사용합니다.
+
+최대 분당 8회 이하로 요청 간격을 두고, 401/403/429이면 같은 실행의 후속 요청을 중단합니다. 300봉을 요청하며 종목·USD 통화·OHLC·날짜를 검증합니다. 거래량 누락은 그대로 표시합니다. API 응답 오류는 종목명이나 키가 포함된 원문을 공개 로그에 출력하지 않습니다. 해당 계정의 종목 접근 권한·실제 성공 여부는 키 등록 후 첫 실행에서 확인해야 합니다.
