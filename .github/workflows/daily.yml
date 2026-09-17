@@ -1,0 +1,70 @@
+name: 보유 종목 점검
+
+on:
+  schedule:
+    # 월~금 16:40 KST (07:40 UTC): KRX 마감 후. 미국은 전날 종가.
+    - cron: "40 7 * * 1-5"
+    # 토 07:40 KST (금 22:40 UTC): 미국 금요일 종가를 월요일까지 기다리지 않게 한 번 더.
+    - cron: "40 22 * * 5"
+  workflow_dispatch: {}      # Actions 탭에서 수동 실행
+
+# 국내 휴장일에는 새 봉이 없어 '새 봉 없음'으로 표시된다. GitHub 예약 실행은 수십 분 지연되거나 건너뛸 수 있다.
+
+permissions:
+  contents: write            # state/state.enc 커밋용
+  pages: write               # Pages 배포
+  id-token: write            # Pages 배포(OIDC)
+
+concurrency:
+  group: daily-report
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 의존성
+        run: pip install --quiet cryptography
+
+      - name: 자체 검증 (가짜 네트워크, 실패하면 여기서 멈춤)
+        run: python3 -m unittest test_pipeline
+
+      - name: 수집·계산·리포트
+        env:
+          HOLDINGS_JSON: ${{ secrets.HOLDINGS_JSON }}      # 보유내역 (비밀)
+          REPORT_PASSWORD: ${{ secrets.REPORT_PASSWORD }}  # 없거나 8자 미만이면 아무것도 만들지 않고 중단
+          DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}    # 선택. 공공데이터포털 키
+          USDKRW: ${{ vars.USDKRW }}                       # 선택. 비우면 보유내역의 usdkrw 또는 1380
+        run: python3 pipeline.py
+        # 전 종목 실패 → 종료 코드 1 → 아래 단계 실행 안 됨 → 이전 페이지·이전 상태 유지
+
+      - name: 비교용 상태 저장 (암호화된 state/state.enc 만 커밋. 리포트는 커밋하지 않음)
+        run: |
+          git config user.name "portfolio-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add state/state.enc
+          if git diff --cached --quiet; then echo "상태 변경 없음"; exit 0; fi
+          git commit -m "state $(date -u +%Y-%m-%dT%H:%M)"
+          git pull --rebase --quiet
+          git push
+
+      # GITHUB_TOKEN 으로 푸시한 커밋은 Pages 빌드를 시작하지 않는다.
+      # 그래서 커밋에 기대지 않고 Pages 배포 작업을 직접 실행한다. (Settings → Pages → Source: GitHub Actions)
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
