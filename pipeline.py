@@ -166,7 +166,7 @@ def yahoo(symbol, market):
 
 GOV = "https://apis.data.go.kr/1160100/"
 def gov(code, is_etf, key):
-    path = "service/GetSecuritiesProductInfoService/getETFPriceInfo" if is_etf else "GetStockSecuritiesInfoService_V2/getStockPriceInfo"
+    path = "GetSecuritiesProductInfoService_V2/getETFPriceInfo_V2" if is_etf else "GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2"
     rows = []
     for page in range(1, 11):
         raw = _get(GOV+path, {"serviceKey": urllib.parse.unquote(key), "resultType": "json", "numOfRows": 600, "pageNo": page,
@@ -220,7 +220,7 @@ def clean(bars, market, now=None):
     return out, empty
 
 def fetch_security(code, mkt, is_etf, gov_key, now=None):
-    """한 종목(코드) 수집. 국내는 공공데이터(키 있으면)를 기준으로 하고 야후로 최근 봉을 보충한다.
+    """한 종목(코드) 수집. 국내는 공공데이터(키 있으면)를 우선 사용하고 실패할 때 야후를 시도한다.
     오류 문구에 종목명·코드를 넣지 않는다(공개 로그에 찍힐 수 있다)."""
     code = (code or "").strip()
     rec = {"code": code, "mkt": mkt, "warnings": []}

@@ -179,8 +179,6 @@ class EndToEnd(unittest.TestCase):
         with open(os.path.join(self.tmp, "site/quotes-patch.json"), "w") as f: f.write("x")
         run(self.tmp); self.assertFalse(os.path.exists(os.path.join(self.tmp, "site/quotes-patch.json")))
 
-if __name__ == "__main__":
-    unittest.main()
 
 class NetworkAndIdentity(unittest.TestCase):
     def test_missing_codes_stay_separate(self):
@@ -198,3 +196,32 @@ class NetworkAndIdentity(unittest.TestCase):
                     with self.assertRaises(mod.ProviderHTTPError) as e: mod._get('https://example.test/private-code',{'key':'secret'})
                     self.assertIn(str(code),str(e.exception));self.assertNotIn('secret',str(e.exception));self.assertNotIn('private-code',str(e.exception))
                 self.assertEqual(call.call_count,1)
+
+class GovernmentV2Contract(unittest.TestCase):
+    def test_official_stock_and_etf_contract_without_yahoo(self):
+        from unittest.mock import patch
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gov_contract', P.__file__)
+        mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+        for is_etf, code, endpoint in (
+            (False, '005930', 'GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2'),
+            (True, '0000D0', 'GetSecuritiesProductInfoService_V2/getETFPriceInfo_V2'),
+        ):
+            for key in ('dummy+key/=', 'dummy%2Bkey%2F%3D'):
+                rows = [dict(basDt=d, srtnCd=code, mkp='100', hipr='110', lopr='90', clpr='105', trqu='123')
+                        for d in ('20260713', '20260714')]
+                response = json.dumps({'response': {'header': {'resultCode': '00'},
+                    'body': {'totalCount': 2, 'items': {'item': rows}}}})
+                with patch.object(mod, '_get', return_value=response) as request, patch.object(mod, 'yahoo') as yahoo:
+                    rec = mod.fetch_security(code, 'KR', is_etf, key, NOW)
+                    self.assertEqual(rec['source'], 'data.go.kr')
+                    self.assertEqual(rec['bars'][-1]['close'], 105)
+                    yahoo.assert_not_called()
+                    url, params = request.call_args.args
+                    self.assertEqual(url, 'https://apis.data.go.kr/1160100/' + endpoint)
+                    self.assertEqual(params['serviceKey'], 'dummy+key/=')
+                    self.assertEqual(params['likeSrtnCd'], code)
+                    self.assertEqual(params['resultType'], 'json')
+
+if __name__ == '__main__':
+    unittest.main()
