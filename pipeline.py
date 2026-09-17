@@ -228,12 +228,19 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
         rec["providerName"] = meta["name"]
     else:
         gov_bars = []
+        gov_failure = "키 미설정" if not gov_key else "유효 일봉 없음"
         if gov_key:
             try:
                 gov_bars, empty = clean(gov(code, is_etf, gov_key), "KR", now)
                 source = "data.go.kr"
             except Exception as e:
-                rec["warnings"].append("공공데이터 실패 → 야후 사용: "+str(e)[:60])
+                if isinstance(e, ProviderHTTPError): gov_failure = str(e)
+                elif isinstance(e, ValueError) and "공공데이터 인증 오류" in str(e):
+                    gov_failure = "인증 응답 오류"
+                    for known in ("SERVICE_KEY_IS_NOT_REGISTERED_ERROR", "SERVICE_ACCESS_DENIED_ERROR", "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR", "SERVICE_KEY_IS_NOT_REGISTERED", "DEADLINE_HAS_EXPIRED_ERROR"):
+                        if known in str(e): gov_failure += " " + known; break
+                else: gov_failure = type(e).__name__ + " (응답 형식 또는 일봉 검증 실패)"
+                rec["warnings"].append("공공데이터: " + gov_failure)
         y_bars, y_meta, err = [], {}, None
         for suf in (".KS", ".KQ"):
             try:
@@ -247,7 +254,7 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
         elif y_bars:
             bars, source, empty = y_bars, "yahoo", y_empty
         else:
-            raise ValueError("야후 실패: "+(str(err) if isinstance(err, ProviderHTTPError) else type(err).__name__ if err else "응답 없음"))
+            raise ValueError("공공데이터: " + gov_failure + " / 야후: "+(str(err) if isinstance(err, ProviderHTTPError) else type(err).__name__ if err else "응답 없음"))
         rec["providerName"] = y_meta.get("name", "")
     if len(bars) < 2: raise ValueError("일봉 부족")
     rec.update({"symbol": sym or code, "source": source, "emptyBarsSkipped": empty,
