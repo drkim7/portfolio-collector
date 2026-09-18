@@ -79,7 +79,7 @@ class Patch(unittest.TestCase):
         self.assertEqual(P.close_stamp("2026-09-14", "KR"), "2026-09-14T15:30:00+09:00")
     def test_quote_asof_not_in_future(self):
         rec = {"mkt": "KR", "bars": P.clean(bars(300), "KR", NOW)[0], "source": "yahoo", "indicators": {}}
-        pb = P.patch_bars(rec, NOW); self.assertEqual(pb[-1]["date"], "2026-09-13")   # 당일 봉 제외
+        pb = P.patch_bars(rec, NOW); self.assertEqual(pb[-1]["date"], "2026-09-14")   # 마감 30분 이후 확정봉
         self.assertLess(datetime.fromisoformat(P.close_stamp(pb[-1]["date"], "KR")), NOW)
 
 # ---- 가짜 네트워크 ----
@@ -169,7 +169,8 @@ class EndToEnd(unittest.TestCase):
             self.assertLess(datetime.fromisoformat(u["quoteAsOf"]), NOW)         # 미래 시각 없음
             self.assertEqual(u["quoteDate"], u["bars"][-1]["date"])
             today = NOW.astimezone(P.market_zone(u["mkt"])).date().isoformat()
-            self.assertLess(u["bars"][-1]["date"], today)                         # 당일 봉 없음
+            self.assertLessEqual(u["bars"][-1]["date"], today)
+            if u["mkt"] == "US": self.assertLess(u["bars"][-1]["date"], today)
             if u["mkt"] == "US": self.assertTrue(u["quoteAsOf"].endswith("-04:00"))   # 9월 = 서머타임
             else: self.assertTrue(u["quoteAsOf"].endswith("T15:30:00+09:00"))
         kr = [u for u in patch["updates"] if u["code"] == "005930"]; self.assertEqual({u["acct"] for u in kr}, {"ISA", "일반(국내)"})
