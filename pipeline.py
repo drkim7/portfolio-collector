@@ -17,7 +17,7 @@
 로컬 시험:  python3 -m unittest test_pipeline -v
 """
 import base64, hashlib, json, math, os, re, sys, time, urllib.parse, urllib.request, urllib.error
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
 UTC = timezone.utc
@@ -27,7 +27,7 @@ BARS_KEEP = 260
 LOOKBACK = 252                       # '직전 252거래일' — 이 봉 수 + 오늘 봉이 있어야만 계산
 CLOSE_TIME = {"KR": (15, 30), "US": (16, 0)}     # 정규장 마감 시각 (시세 파일의 quoteAsOf)
 SETTLE_MIN = {"KR": 10, "US": 20}                # 마감 후 이 분이 지나야 당일 봉을 완결로 본다
-PATCH_EXCLUDE_TODAY = True           # 앱은 당일 봉을 거부하므로 시세 파일에는 전일까지만 넣는다
+PATCH_EXCLUDE_TODAY = False           # 앱은 당일 봉을 거부하므로 시세 파일에는 전일까지만 넣는다
 
 # ============================================================
 # 1. 지표 — 순수 함수. 같은 입력에는 항상 같은 결과.
@@ -561,8 +561,12 @@ def close_stamp(date_iso, mkt):
     return datetime(y, mo, d, hh, mm, tzinfo=market_zone(mkt)).isoformat()
 
 def patch_bars(rec, now):
-    today = now.astimezone(market_zone(rec["mkt"])).date().isoformat()
-    return [b for b in rec["bars"] if not (PATCH_EXCLUDE_TODAY and b["date"] >= today)]
+    local = now.astimezone(market_zone(rec["mkt"]))
+    # Conservative regular close plus 30 minutes, matching the app validator.
+    close_minute = 16*60 if rec["mkt"] == "KR" else 16*60+30
+    ready = local.hour*60+local.minute >= close_minute
+    cutoff = local.date() if ready else local.date()-timedelta(days=1)
+    return [b for b in rec["bars"] if b["date"] <= cutoff.isoformat() and date.fromisoformat(b["date"]).weekday() < 5]
 
 def build_patch(holdings, records, generated, now):
     by_key = {r["key"]: r for r in records}
