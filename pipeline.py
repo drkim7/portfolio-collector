@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 UTC = timezone.utc
 KST = ZoneInfo("Asia/Seoul")
 NYT = ZoneInfo("America/New_York")
-BARS_KEEP = 260
+BARS_KEEP = 300
 LOOKBACK = 252                       # '직전 252거래일' — 이 봉 수 + 오늘 봉이 있어야만 계산
 CLOSE_TIME = {"KR": (15, 30), "US": (16, 0)}     # 정규장 마감 시각 (시세 파일의 quoteAsOf)
 SETTLE_MIN = {"KR": 10, "US": 20}                # 마감 후 이 분이 지나야 당일 봉을 완결로 본다
@@ -250,7 +250,7 @@ def gov(code, is_etf, key):
     rows = []
     for page in range(1, 11):
         raw = _get(GOV+path, {"serviceKey": urllib.parse.unquote(key), "resultType": "json", "numOfRows": 600, "pageNo": page,
-                              "likeSrtnCd": code, "beginBasDt": (datetime.now(UTC)-timedelta(days=420)).strftime("%Y%m%d")})
+                              "likeSrtnCd": code, "beginBasDt": (datetime.now(UTC)-timedelta(days=500)).strftime("%Y%m%d")})
         if raw.lstrip().startswith("<"): raise ValueError("공공데이터 인증 오류: "+re.sub(r"<[^>]+>", " ", raw)[:80].strip())
         d = json.loads(raw).get("response", {}); hd = d.get("header", {})
         if str(hd.get("resultCode")) not in ("00", "0"): raise ValueError("공공데이터 오류 코드 "+str(hd.get("resultCode")))
@@ -457,7 +457,7 @@ def signals(rec, prev, sec, share_over):
         if r <= 30 and (not prev or (prev.get("rsi") or 50) > 30): out.append((4, f"RSI {r:.0f} — 과매도 구간 진입 (바닥 신호는 아님)"))
         if r >= 70 and (not prev or (prev.get("rsi") or 50) < 70): out.append((5, f"RSI {r:.0f} — 과매수 구간 진입"))
     dd = (p/d["high52w"]-1)*100 if d["high52w"] else None
-    if dd is not None and dd <= -20 and (not prev or (prev.get("dd") or 0) > -20): out.append((3, f"52주 고점 대비 {dd:.0f}% — 하락폭 20% 넘음"))
+    if dd is not None and dd <= -20 and (not prev or (prev.get("dd") or 0) > -20): out.append((3, f"{'252일 고점' if rec.get('assetClass')=='crypto' else '52주 고점'} 대비 {dd:.0f}% — 하락폭 20% 넘음"))
     for t in share_over: out.append((2, f"위험 태그 '{t}' 비중이 한도를 넘음"))
     return out
 
@@ -567,10 +567,12 @@ def render(secs, records, prev_state, limits, rate, meta):
         share = val[r["key"]]["krw"]/total*100 if total else 0
         atrp = d["atr14"]/d["close"]*100 if d["atr14"] else None
         warn = "".join(f'<span class="chip warn">{esc(w)}</span>' for w in r.get("warnings", []))
+        period_label = "252일(UTC·주말 포함)" if r.get("assetClass")=="crypto" else "252거래일"
+        high_label = "252일 고점" if r.get("assetClass")=="crypto" else "52주 고점"
         if d["high252ExclToday"]:
-            hi_chip = f'<span class="chip">{LOOKBACK}일 돌파선<b class="num">{rel(d["high252ExclToday"])}</b></span><span class="chip">52주 고점<b class="num">{rel(d["high52w"])}</b></span>'
+            hi_chip = f'<span class="chip">{period_label} 돌파선<b class="num">{rel(d["high252ExclToday"])}</b></span><span class="chip">{high_label}<b class="num">{rel(d["high52w"])}</b></span>'
         else:
-            hi_chip = f'<span class="chip warn">이력 {d["highAvailBars"]}봉 최고가<b class="num">{rel(d["highAvailExclToday"])}</b> ({LOOKBACK}일 돌파선 아님)</span>'
+            hi_chip = f'<span class="chip warn">이력 {d["highAvailBars"]}봉 최고가<b class="num">{rel(d["highAvailExclToday"])}</b> ({period_label} 돌파선 아님)</span>'
         vol_chip = f"{d['volRatio20']:.1f}배" if d["volRatio20"] else ("거래량 누락" if d["volumeMissing"] else "—")
         cards.append(f"""<div class="card"><div class="row"><div><span class="name">{esc(s['name'])}</span>
           <div class="sub">{esc(' · '.join(s['accts']))} · {esc(r['symbol'])} · 비중 {share:.1f}%{' · 평단 대비 '+pct(ret) if ret is not None else ''}</div></div>

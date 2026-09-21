@@ -89,4 +89,50 @@ class Health(unittest.TestCase):
      self.assertIn('일일 시세 점검',sender.call_args_list[2].args[2])
    finally:os.chdir(cwd)
 
+
+
+
+class DigestQueue(unittest.TestCase):
+ def test_morning_afternoon_retry_and_next_day(self):
+  import tempfile,os,json
+  from pathlib import Path
+  from unittest.mock import patch as mockpatch, Mock
+  from notify import main,save
+  from pipeline import encrypt,decrypt
+  password='fixture-password';cwd=os.getcwd();sender=Mock()
+  env={'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture','REPORT_PASSWORD':password}
+  def candles(day,price):
+   p=patch(day,price);u=p['updates'][0];u['quoteDate']=f'2026-09-{day:02d}'
+   u['bars']=[dict(date=f'2026-08-{j+1:02d}',close=100,high=101) for j in range(20)]+[u['bars'][-1]]
+   return p
+  with tempfile.TemporaryDirectory() as tmp:
+   try:
+    os.chdir(tmp);Path('site').mkdir()
+    baseline,_=evaluate(H,candles(20,99),{},datetime(2026,9,22,tzinfo=timezone.utc));baseline['initialized']=True
+    save(Path('state/alerts.enc'),baseline,password)
+    def load():return json.loads(decrypt(json.loads(Path('state/alerts.enc').read_text()),password))
+    with mockpatch.dict('os.environ',env,clear=True),mockpatch('notify.time.sleep'),mockpatch('notify.load_holdings',return_value=(H,{},None)),mockpatch('notify.datetime') as clock:
+     clock.fromisoformat.side_effect=datetime.fromisoformat
+     def run(at,day,price):
+      clock.now.return_value=datetime.fromisoformat(at)
+      Path('site/quotes-patch.enc').write_text(json.dumps(encrypt(json.dumps(candles(day,price)),password)))
+      main(sender)
+     run('2026-09-22T01:40:00+00:00',21,101)
+     self.assertEqual(sender.call_count,0);self.assertTrue(load()['pending'])
+     sender.side_effect=RuntimeError('offline')
+     with self.assertRaises(RuntimeError):run('2026-09-22T07:40:00+00:00',22,99)
+     self.assertEqual(len(load()['pending']),2)
+     sender.side_effect=None;sender.reset_mock()
+     run('2026-09-22T07:45:00+00:00',22,99)
+     self.assertEqual(sender.call_count,1)
+     text=sender.call_args.args[2];self.assertIn('위로 전환',text);self.assertIn('아래로 전환',text)
+     self.assertEqual(load()['pending'],[])
+     run('2026-09-22T08:00:00+00:00',22,99);self.assertEqual(sender.call_count,1)
+     run('2026-09-23T01:40:00+00:00',22,101)
+     # Same completed candle does not generate a second transition.
+     self.assertEqual(sender.call_count,1)
+     run('2026-09-23T07:40:00+00:00',23,101)
+     self.assertEqual(sender.call_count,2);self.assertEqual(load()['pending'],[])
+   finally:os.chdir(cwd)
+
 if __name__=='__main__':unittest.main()

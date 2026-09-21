@@ -47,9 +47,9 @@ class Indicators(unittest.TestCase):
         self.assertIsNone(d["high252ExclToday"]); self.assertIsNone(d["high52w"]); self.assertEqual(d["highAvailBars"], 49)
 
 class Clean(unittest.TestCase):
-    def test_skip_empty_keep_260(self):
+    def test_skip_empty_keep_300(self):
         b, empty = P.clean(bars(300, empties=(250, 280)), "KR", NOW)
-        self.assertEqual((len(b), empty), (260, 2))
+        self.assertEqual((len(b), empty), (298, 2))
     def test_kr_after_close_includes_today(self):
         b, _ = P.clean(bars(300), "KR", NOW); self.assertEqual(b[-1]["date"], "2026-09-14")
     def test_kr_intraday_excludes_today(self):
@@ -155,7 +155,7 @@ class EndToEnd(unittest.TestCase):
         html = read_html(self.tmp, "test-1234")
         self.assertIn("가종목", html); self.assertIn("거래량 20일 평균의", html)
         self.assertIn("공공데이터 실패", html)                                   # 공공데이터 실패는 경고로만
-        self.assertIn("252일 돌파선 아님", html)                                # 짧은 이력 종목은 돌파선 아님을 표시
+        self.assertIn("252거래일 돌파선 아님", html)                                # 짧은 이력 종목은 돌파선 아님을 표시
         self.assertEqual((meta["ok"], meta["fail"]), (4, 1)); self.assertIsNone(meta["lastFullSuccessAt"])
         self.assertIn("비중 판정 보류", html)                                     # 평가액 없는 종목 있음 → 보류
         self.assertEqual(set(os.listdir(os.path.join(self.tmp, "site"))), {"index.html", "quotes-patch.enc", ".nojekyll"})
