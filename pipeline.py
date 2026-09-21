@@ -307,6 +307,7 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
     code = (code or "").strip()
     rec = {"code": code, "mkt": mkt, "warnings": []}
     if not code: raise ValueError("종목코드 없음")
+    if code.endswith("-KRW"): raise ValueError("원화 가상자산 페어는 미지원입니다. USD 가격과 원화 거래소 가격을 혼용하지 마세요")
     if mkt not in ("KR", "US"): raise ValueError("시장 구분 이상")
     if mkt == "KR" and not KR_CODE.match(code): raise ValueError("국내 코드 형식 아님")
     bars, source, sym, empty = [], None, None, 0
@@ -644,11 +645,9 @@ def close_stamp(date_iso, mkt, asset_class=None):
 
 def patch_bars(rec, now):
     if rec.get("assetClass") == "crypto":
-        # 리포트/지표는 24/7 일봉을 유지하지만, 현재 앱 스키마는 mkt='US'를
-        # 거래소 종목으로 검증해 주말 일봉을 거부한다. 앱용 패치만 평일 봉으로 제한한다.
+        # 앱과 리포트 모두 완결 UTC 일봉을 사용하며 주말을 유지한다.
         cutoff = now.astimezone(UTC).date()-timedelta(days=1)
-        return [b for b in rec["bars"] if b["date"] <= cutoff.isoformat()
-                and date.fromisoformat(b["date"]).weekday() < 5]
+        return [b for b in rec["bars"] if b["date"] <= cutoff.isoformat()]
     local = now.astimezone(market_zone(rec["mkt"]))
     # Conservative regular close plus 30 minutes, matching the app validator.
     close_minute = 16*60 if rec["mkt"] == "KR" else 16*60+30
@@ -669,10 +668,10 @@ def build_patch(holdings, records, generated, now):
         if len(bars)<2: fails.append({"id": it.get("id"), "name": it["name"], "code": it.get("code"), "reason": "일봉 부족", "error": "완결 봉 없음"}); continue
         last = bars[-1]
         ups.append({"id": it.get("id"), "matchBy": "id" if it.get("id") else "code", "name": it["name"], "code": it.get("code"), "mkt": it["mkt"],
-                    "acct": it.get("acct"), "price": last["close"], "quoteDate": last["date"], "quoteAsOf": close_stamp(last["date"], it["mkt"], r.get("assetClass")),
+                    "assetClass": r.get("assetClass", "equity"), "acct": it.get("acct"), "price": last["close"], "quoteDate": last["date"], "quoteAsOf": close_stamp(last["date"], it["mkt"], r.get("assetClass")),
                     "quoteTimePrecision": "day", "quoteSource": r["source"]+" completed daily bar", "collectedAt": generated,
                     "bars": bars})
-    return {"kind": "portfolio-quotes-v1", "collectedAt": generated, "barRule": "exchange assets use completed trading days; crypto is collected 24/7 but app patch keeps weekday bars for current US-market validator compatibility",
+    return {"kind": "portfolio-quotes-v1", "collectedAt": generated, "barRule": "exchange assets use completed trading days; crypto uses all completed UTC days including weekends; 252 crypto bars mean 252 calendar days, not 52 weeks",
             "updates": ups, "failures": fails}
 
 # ============================================================
@@ -795,3 +794,4 @@ def main(site_dir="site", state_dir="state", now=None):
 
 if __name__ == "__main__":
     main()
+

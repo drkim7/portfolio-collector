@@ -85,13 +85,13 @@ class Patch(unittest.TestCase):
         rec = {"mkt": "KR", "bars": P.clean(bars(300), "KR", NOW)[0], "source": "yahoo", "indicators": {}}
         pb = P.patch_bars(rec, NOW); self.assertEqual(pb[-1]["date"], "2026-09-14")   # 마감 30분 이후 확정봉
         self.assertLess(datetime.fromisoformat(P.close_stamp(pb[-1]["date"], "KR")), NOW)
-    def test_crypto_report_is_247_but_app_patch_excludes_weekend(self):
+    def test_crypto_report_and_app_patch_keep_weekends(self):
         now = datetime(2026, 9, 21, 7, 0, tzinfo=timezone.utc)
         rec = {"mkt": "US", "assetClass": "crypto", "bars": bars(10, end=datetime(2026,9,20,tzinfo=timezone.utc).date()), "source": "coinbase", "indicators": {}}
         self.assertEqual(rec["bars"][-1]["date"], "2026-09-20")  # 수집/지표 쪽은 일요일 포함
         pb = P.patch_bars(rec, now)
-        self.assertEqual(pb[-1]["date"], "2026-09-18")          # 앱 패치는 현재 US 검증기 호환용 평일만
-        self.assertTrue(all(datetime.fromisoformat(x["date"]).weekday() < 5 for x in pb))
+        self.assertEqual(pb[-1]["date"], "2026-09-20")
+        self.assertEqual(pb, rec["bars"])
         self.assertEqual(P.close_stamp("2026-09-18", "US", "crypto"), "2026-09-18T23:59:59+00:00")
 
 # ---- 가짜 네트워크 ----
@@ -254,16 +254,17 @@ class GovernmentHistoricalGap(unittest.TestCase):
                 P.fetch_security('005930', 'KR', False, 'test-key', NOW)
 
 class CryptoPatchCompatibility(unittest.TestCase):
-    def test_build_patch_crypto_uses_weekday_bar(self):
+    def test_build_patch_crypto_uses_completed_utc_day(self):
         now = datetime(2026, 9, 21, 7, 0, tzinfo=timezone.utc)
         h = [{"id":"c1","name":"코인","code":"BTC-USD","mkt":"US","acct":"가상자산","buy":100,"qty":1,"tags":["가상자산"]}]
         raw = bars(20, end=datetime(2026,9,20,tzinfo=timezone.utc).date())
         r = {"key":"US:BTC-USD","name":"코인","code":"BTC-USD","mkt":"US","source":"coinbase",
              "assetClass":"crypto","bars":raw,"indicators":P.compute(raw)}
         patch = P.build_patch(h,[r],now.isoformat(),now)
-        self.assertEqual(patch["updates"][0]["quoteDate"],"2026-09-18")
-        self.assertEqual(patch["updates"][0]["quoteAsOf"],"2026-09-18T23:59:59+00:00")
-        self.assertFalse(any(datetime.fromisoformat(x["date"]).weekday() >= 5 for x in patch["updates"][0]["bars"]))
+        self.assertEqual(patch["updates"][0]["quoteDate"],"2026-09-20")
+        self.assertEqual(patch["updates"][0]["quoteAsOf"],"2026-09-20T23:59:59+00:00")
+        self.assertEqual(patch["updates"][0]["bars"],raw)
+        self.assertEqual(patch["updates"][0]["assetClass"],"crypto")
 
 class CoinbaseCrypto(unittest.TestCase):
     def test_public_candles_parse(self):
@@ -354,3 +355,4 @@ class AuthenticatedUSData(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
