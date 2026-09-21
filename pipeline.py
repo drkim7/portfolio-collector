@@ -120,9 +120,14 @@ def compute(bars):
 # ============================================================
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
 KR_CODE = re.compile(r"^[0-9A-Z]{6}$")          # 숫자 6자리뿐 아니라 0153K0 같은 새 형식도 허용
+CRYPTO_CODE = re.compile(r"^[A-Z0-9]{2,15}-USD$") # BTC-USD, ADA-USD 등 Yahoo USD 현물 페어
+
+def is_crypto(code):
+    return bool(CRYPTO_CODE.fullmatch((code or "").strip().upper()))
 
 _HOST_BLOCKS = {}
 _HOST_TIMEOUTS = {}
+_YAHOO_LAST_REQUEST = 0.0
 class ProviderHTTPError(ValueError):
     def __init__(self, code, cached=False):
         self.code = code
@@ -150,19 +155,38 @@ def _get(url, params=None, retries=2):
         if i < min(retries,2)-1: time.sleep(1)
 
 def yahoo(symbol, market):
-    raw = _get("https://query1.finance.yahoo.com/v8/finance/chart/"+urllib.parse.quote(symbol, safe=""),
-               {"range": "2y", "interval": "1d"})
-    res = json.loads(raw).get("chart", {}).get("result")
-    if not res: raise ValueError("야후 응답 없음")
-    r = res[0]; meta = r.get("meta", {})
-    if meta.get("symbol", "").upper() != symbol.upper(): raise ValueError("응답 심볼 불일치")
-    if meta.get("currency") != ("KRW" if market == "KR" else "USD"): raise ValueError("통화 불일치 "+str(meta.get("currency")))
-    zone = ZoneInfo(meta.get("exchangeTimezoneName") or ("Asia/Seoul" if market == "KR" else "America/New_York"))
-    q = r["indicators"]["quote"][0]
-    bars = [{"date": datetime.fromtimestamp(t, zone).date().isoformat(),
-             **{k: q[k][j] for k in ("open", "high", "low", "close", "volume")}}
-            for j, t in enumerate(r.get("timestamp") or [])]
-    return bars, {"name": meta.get("longName") or meta.get("shortName") or "", "exchange": meta.get("fullExchangeName") or ""}
+    """Yahoo chart. query1이 429/403/연결 실패면 query2 미러를 한 번 시도한다."""
+    global _YAHOO_LAST_REQUEST
+    last = None
+    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+        delay = 0.35 - (time.monotonic() - _YAHOO_LAST_REQUEST)
+        if delay > 0: time.sleep(delay)
+        _YAHOO_LAST_REQUEST = time.monotonic()
+        try:
+            raw = _get("https://"+host+"/v8/finance/chart/"+urllib.parse.quote(symbol, safe=""),
+                       {"range": "2y", "interval": "1d"})
+        except ProviderHTTPError as e:
+            last = e
+            if e.code in (403, 429): continue
+            raise
+        except ValueError as e:
+            last = e
+            if str(e) in ("네트워크 연결 실패 또는 10초 시간 초과", "제공자 연결 실패 반복: 이번 실행 추가 요청 중지"):
+                continue
+            raise
+        res = json.loads(raw).get("chart", {}).get("result")
+        if not res: raise ValueError("야후 응답 없음")
+        r = res[0]; meta = r.get("meta", {})
+        if meta.get("symbol", "").upper() != symbol.upper(): raise ValueError("응답 심볼 불일치")
+        if meta.get("currency") != ("KRW" if market == "KR" else "USD"): raise ValueError("통화 불일치 "+str(meta.get("currency")))
+        zone = ZoneInfo(meta.get("exchangeTimezoneName") or ("Asia/Seoul" if market == "KR" else "America/New_York"))
+        q = r["indicators"]["quote"][0]
+        bars = [{"date": datetime.fromtimestamp(ts, zone).date().isoformat(),
+                 **{k: q[k][j] for k in ("open", "high", "low", "close", "volume")}}
+                for j, ts in enumerate(r.get("timestamp") or [])]
+        return bars, {"name": meta.get("longName") or meta.get("shortName") or "", "exchange": meta.get("fullExchangeName") or ""}
+    if last: raise last
+    raise ValueError("야후 연결 실패")
 
 _TD_LAST_REQUEST = 0.0
 
@@ -224,16 +248,18 @@ def market_closed(market, now):
     local = now.astimezone(market_zone(market)); hh, mm = CLOSE_TIME[market]
     return (local.hour, local.minute) >= (hh, mm + SETTLE_MIN[market])
 
-def completed_cutoff(market, now):
-    """완결 일봉으로 인정할 마지막 날짜(현지). 마감 후면 당일, 아니면 전일."""
+def completed_cutoff(market, now, continuous=False):
+    """완결 일봉 마지막 날짜. 24/7 자산은 UTC 기준 전일까지, 거래소 자산은 현지 마감 기준."""
+    if continuous:
+        return (now.astimezone(UTC).date()-timedelta(days=1)).isoformat()
     local = now.astimezone(market_zone(market)).date()
     return local.isoformat() if market_closed(market, now) else (local-timedelta(days=1)).isoformat()
 
-def clean(bars, market, now=None):
+def clean(bars, market, now=None, continuous=False):
     """완결된 일봉만. 값이 전혀 없는 날은 건너뛰고 개수를 기록. 일부만 비었거나 고저가 어긋나면 거부.
     거래량만 없는 날은 volume=None 으로 남긴다(0과 구분)."""
     now = now or datetime.now(UTC)
-    cutoff = completed_cutoff(market, now)
+    cutoff = completed_cutoff(market, now, continuous)
     rows = sorted([(_day(b["date"]), b) for b in bars if _day(b["date"]) <= cutoff], key=lambda x: x[0])
     out, dates, empty = [], set(), 0
     for d, b in reversed(rows):
@@ -259,7 +285,15 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
     if mkt not in ("KR", "US"): raise ValueError("시장 구분 이상")
     if mkt == "KR" and not KR_CODE.match(code): raise ValueError("국내 코드 형식 아님")
     bars, source, sym, empty = [], None, None, 0
-    if mkt == "US":
+    if mkt == "US" and is_crypto(code):
+        # Twelve Data의 주식 심볼 경로에 BTC-USD/ADA-USD를 넣으면 404가 날 수 있다.
+        # 암호화폐는 Yahoo의 -USD 심볼을 직접 쓰고, 주말을 포함한 UTC 완결 일봉을 유지한다.
+        raw, meta = yahoo(code, "US")
+        bars, empty = clean(raw, "US", now, continuous=True)
+        source, sym = "yahoo-crypto", code
+        rec["assetClass"] = "crypto"
+        rec["providerName"] = meta["name"]
+    elif mkt == "US":
         key = os.environ.get("TWELVE_DATA_API_KEY", "").strip()
         if key:
             raw = twelvedata(code, key)
@@ -404,6 +438,16 @@ def fmt(v, mkt):
 def pct(v): return "—" if v is None else f"{v:+.1f}%"
 def esc(s): return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
+def failure_kind(error):
+    e = str(error or "")
+    if "429" in e: return "요청 제한"
+    if "네트워크" in e or "시간 초과" in e or "연결 실패" in e: return "연결 실패"
+    if "404" in e or "응답 없음" in e or "미지원" in e: return "티커·제공자"
+    if "인증" in e or "401" in e or "403" in e: return "인증·접근"
+    if "일봉 부족" in e or "완결 봉 없음" in e: return "일봉 부족"
+    if "형식" in e or "불일치" in e or "누락" in e or "중복 날짜" in e: return "자료 검증"
+    return "기타"
+
 def spark(bars, w=120, h=32):
     c = [b["close"] for b in bars[-60:]]
     if len(c) < 2: return ""
@@ -453,7 +497,10 @@ def valuation(secs, records, prev_state, rate):
 
 def render(secs, records, prev_state, limits, rate, meta):
     ok = [r for r in records if "indicators" in r]
-    fails = [(r["name"], r["error"]) for r in records if "error" in r]
+    fails = [(r["name"], r["error"], failure_kind(r["error"])) for r in records if "error" in r]
+    fail_counts = {}
+    for _, _, k in fails: fail_counts[k] = fail_counts.get(k, 0)+1
+    fail_summary = " · ".join(f"{k} {n}" for k, n in sorted(fail_counts.items(), key=lambda x: (-x[1], x[0])))
     by_key = {s["key"]: s for s in secs}
     val = valuation(secs, records, prev_state, rate)
     valued = {k: v for k, v in val.items() if v["krw"] is not None}
@@ -542,7 +589,7 @@ async function dl(){const b=document.getElementById('dl');b.textContent='받는 
 {('<details><summary>나머지 '+str(len(rest))+'건</summary>'+sig_html(rest)+'</details>') if rest else ''}</div>
 <h2>위험 태그 비중 <span class="sub">평가 {total/1e4:,.0f}만원 · {len(valued)}/{len(secs)}종목</span></h2><div class="card">{hold_html}{tag_html or '<div class="sub">태그 없음</div>'}</div>
 <h2>종목 <span class="sub">평가액 순</span></h2>{''.join(cards)}
-{('<h2>실패 '+str(len(fails))+'건</h2><div class="card">'+''.join(f'<div class="sig p3"><i></i><div><b>{esc(n)}</b> {esc(e)}</div></div>' for n,e in fails)+'</div>') if fails else ''}
+{('<h2>실패 '+str(len(fails))+'건 <span class="sub">'+esc(fail_summary)+'</span></h2><div class="card">'+''.join(f'<div class="sig p3"><i></i><div><b>{esc(n)}</b> <span class="chip warn">{esc(k)}</span> {esc(e)}</div></div>' for n,e,k in fails)+'</div>') if fails else ''}
 <h2>다른 앱으로 보내기</h2><div class="card"><a class="btn" id="dl" onclick="dl()">시세 패치 내려받기</a>
 <div class="sub" style="margin-top:8px">내 투자 데스크의 '시세 파일 가져오기'용. 전일까지의 완결 봉만 담고 종목별 id·collectedAt·마감 시각을 넣었습니다.{f' <span class="over">id 없는 종목 {ids_missing}건 — 앱에서 내보낸 보유내역(id 포함)으로 Secret을 갱신하세요.</span>' if ids_missing else ''}</div></div>
 <p class="note">여기 표시되는 것은 계산된 값으로 만든 확인 항목이며 매매 지시가 아닙니다. 야후 데이터는 지연·누락이 있을 수 있고, 공공데이터포털은 영업일 하루 뒤 오후에 갱신됩니다.
@@ -556,11 +603,17 @@ async function dl(){const b=document.getElementById('dl');b.textContent='받는 
 #    · quoteAsOf 는 그 날의 실제 마감 시각(국내 15:30+09:00, 미국 16:00 현지, 서머타임 자동)
 #    · 당일 봉은 넣지 않는다(앱은 당일 봉 거부) → 전일 완결 봉 기준
 # ============================================================
-def close_stamp(date_iso, mkt):
-    y, mo, d = map(int, date_iso.split("-")); hh, mm = CLOSE_TIME[mkt]
+def close_stamp(date_iso, mkt, asset_class=None):
+    y, mo, d = map(int, date_iso.split("-"))
+    if asset_class == "crypto":
+        return datetime(y, mo, d, 23, 59, 59, tzinfo=UTC).isoformat()
+    hh, mm = CLOSE_TIME[mkt]
     return datetime(y, mo, d, hh, mm, tzinfo=market_zone(mkt)).isoformat()
 
 def patch_bars(rec, now):
+    if rec.get("assetClass") == "crypto":
+        cutoff = now.astimezone(UTC).date()-timedelta(days=1)
+        return [b for b in rec["bars"] if b["date"] <= cutoff.isoformat()]
     local = now.astimezone(market_zone(rec["mkt"]))
     # Conservative regular close plus 30 minutes, matching the app validator.
     close_minute = 16*60 if rec["mkt"] == "KR" else 16*60+30
@@ -575,15 +628,16 @@ def build_patch(holdings, records, generated, now):
         if not (it.get("qty") or 0) > 0: continue
         r = by_key.get(sec_key(it))
         if not r or "indicators" not in r:
-            fails.append({"id": it.get("id"), "name": it["name"], "code": it.get("code"), "error": (r or {}).get("error", "미수집")}); continue
+            err = (r or {}).get("error", "미수집")
+            fails.append({"id": it.get("id"), "name": it["name"], "code": it.get("code"), "reason": failure_kind(err), "error": err}); continue
         bars = patch_bars(r, now)
-        if len(bars)<2: fails.append({"id": it.get("id"), "name": it["name"], "code": it.get("code"), "error": "완결 봉 없음"}); continue
+        if len(bars)<2: fails.append({"id": it.get("id"), "name": it["name"], "code": it.get("code"), "reason": "일봉 부족", "error": "완결 봉 없음"}); continue
         last = bars[-1]
         ups.append({"id": it.get("id"), "matchBy": "id" if it.get("id") else "code", "name": it["name"], "code": it.get("code"), "mkt": it["mkt"],
-                    "acct": it.get("acct"), "price": last["close"], "quoteDate": last["date"], "quoteAsOf": close_stamp(last["date"], it["mkt"]),
+                    "acct": it.get("acct"), "price": last["close"], "quoteDate": last["date"], "quoteAsOf": close_stamp(last["date"], it["mkt"], r.get("assetClass")),
                     "quoteTimePrecision": "day", "quoteSource": r["source"]+" completed daily bar", "collectedAt": generated,
                     "bars": bars})
-    return {"kind": "portfolio-quotes-v1", "collectedAt": generated, "barRule": "completed bars up to previous local trading day",
+    return {"kind": "portfolio-quotes-v1", "collectedAt": generated, "barRule": "exchange assets use completed trading days; crypto uses previous completed UTC day",
             "updates": ups, "failures": fails}
 
 # ============================================================

@@ -56,6 +56,10 @@ class Clean(unittest.TestCase):
         b, _ = P.clean(bars(300), "KR", datetime(2026, 9, 14, 2, 0, tzinfo=timezone.utc)); self.assertEqual(b[-1]["date"], "2026-09-13")
     def test_us_before_close_excludes_today(self):
         b, _ = P.clean(bars(300, end=NOW.astimezone(P.NYT).date()), "US", NOW); self.assertEqual(b[-1]["date"], "2026-09-13")
+    def test_crypto_uses_previous_utc_day_and_keeps_weekends(self):
+        sunday = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
+        b, _ = P.clean(bars(10, end=sunday.date()), "US", datetime(2026, 9, 21, 7, 0, tzinfo=timezone.utc), continuous=True)
+        self.assertEqual(b[-1]["date"], "2026-09-20")
     def test_partial_rejected(self):
         with self.assertRaises(ValueError): P.clean(bars(300, partial=(200,)), "KR", NOW)
     def test_volume_none_kept(self):
@@ -81,6 +85,12 @@ class Patch(unittest.TestCase):
         rec = {"mkt": "KR", "bars": P.clean(bars(300), "KR", NOW)[0], "source": "yahoo", "indicators": {}}
         pb = P.patch_bars(rec, NOW); self.assertEqual(pb[-1]["date"], "2026-09-14")   # 마감 30분 이후 확정봉
         self.assertLess(datetime.fromisoformat(P.close_stamp(pb[-1]["date"], "KR")), NOW)
+    def test_crypto_patch_keeps_weekend_and_uses_utc_day_end(self):
+        now = datetime(2026, 9, 21, 7, 0, tzinfo=timezone.utc)
+        rec = {"mkt": "US", "assetClass": "crypto", "bars": bars(10, end=datetime(2026,9,20,tzinfo=timezone.utc).date()), "source": "yahoo-crypto", "indicators": {}}
+        pb = P.patch_bars(rec, now)
+        self.assertEqual(pb[-1]["date"], "2026-09-20")
+        self.assertEqual(P.close_stamp("2026-09-20", "US", "crypto"), "2026-09-20T23:59:59+00:00")
 
 # ---- 가짜 네트워크 ----
 def fake_get_factory(fail_codes=(), gov_ok=False):
@@ -240,6 +250,32 @@ class GovernmentHistoricalGap(unittest.TestCase):
         with patch.object(P, 'gov', return_value=rows), patch.object(P, 'yahoo', side_effect=ValueError('unavailable')):
             with self.assertRaises(ValueError):
                 P.fetch_security('005930', 'KR', False, 'test-key', NOW)
+
+class YahooFallbackAndCrypto(unittest.TestCase):
+    def test_yahoo_uses_query2_after_query1_429(self):
+        from unittest.mock import patch
+        sample = fake_get_factory()("https://query2.finance.yahoo.com/v8/finance/chart/AAPL", {"range":"2y","interval":"1d"})
+        calls=[]
+        def get(url, params=None, retries=2):
+            calls.append(url)
+            if "query1.finance.yahoo.com" in url: raise P.ProviderHTTPError(429)
+            return sample
+        with patch.object(P, "_get", side_effect=get), patch.object(P.time, "sleep"):
+            b, meta = P.yahoo("AAPL", "US")
+        self.assertTrue(b); self.assertEqual(len(calls), 2); self.assertIn("query2.finance.yahoo.com", calls[-1])
+
+    def test_crypto_bypasses_twelve_data_and_marks_asset_class(self):
+        from unittest.mock import patch
+        raw = bars(20, end=datetime(2026,9,20,tzinfo=timezone.utc).date())
+        with patch.dict(os.environ, {"TWELVE_DATA_API_KEY":"fake-key"}), patch.object(P, "yahoo", return_value=(raw, {"name":"Bitcoin","exchange":"CCC"})) as y, patch.object(P, "twelvedata") as td:
+            r = P.fetch_security("BTC-USD", "US", False, "", datetime(2026,9,21,7,0,tzinfo=timezone.utc))
+        self.assertEqual(r["source"], "yahoo-crypto"); self.assertEqual(r["assetClass"], "crypto")
+        self.assertEqual(r["bars"][-1]["date"], "2026-09-20"); y.assert_called_once(); td.assert_not_called()
+
+    def test_failure_kind(self):
+        self.assertEqual(P.failure_kind("야후: HTTP 429"), "요청 제한")
+        self.assertEqual(P.failure_kind("네트워크 연결 실패 또는 10초 시간 초과"), "연결 실패")
+        self.assertEqual(P.failure_kind("HTTP 404"), "티커·제공자")
 
 class AuthenticatedUSData(unittest.TestCase):
     def response(self):
