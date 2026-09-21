@@ -644,8 +644,11 @@ def close_stamp(date_iso, mkt, asset_class=None):
 
 def patch_bars(rec, now):
     if rec.get("assetClass") == "crypto":
+        # 리포트/지표는 24/7 일봉을 유지하지만, 현재 앱 스키마는 mkt='US'를
+        # 거래소 종목으로 검증해 주말 일봉을 거부한다. 앱용 패치만 평일 봉으로 제한한다.
         cutoff = now.astimezone(UTC).date()-timedelta(days=1)
-        return [b for b in rec["bars"] if b["date"] <= cutoff.isoformat()]
+        return [b for b in rec["bars"] if b["date"] <= cutoff.isoformat()
+                and date.fromisoformat(b["date"]).weekday() < 5]
     local = now.astimezone(market_zone(rec["mkt"]))
     # Conservative regular close plus 30 minutes, matching the app validator.
     close_minute = 16*60 if rec["mkt"] == "KR" else 16*60+30
@@ -669,7 +672,7 @@ def build_patch(holdings, records, generated, now):
                     "acct": it.get("acct"), "price": last["close"], "quoteDate": last["date"], "quoteAsOf": close_stamp(last["date"], it["mkt"], r.get("assetClass")),
                     "quoteTimePrecision": "day", "quoteSource": r["source"]+" completed daily bar", "collectedAt": generated,
                     "bars": bars})
-    return {"kind": "portfolio-quotes-v1", "collectedAt": generated, "barRule": "exchange assets use completed trading days; crypto uses previous completed UTC day",
+    return {"kind": "portfolio-quotes-v1", "collectedAt": generated, "barRule": "exchange assets use completed trading days; crypto is collected 24/7 but app patch keeps weekday bars for current US-market validator compatibility",
             "updates": ups, "failures": fails}
 
 # ============================================================
