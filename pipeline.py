@@ -188,6 +188,31 @@ def yahoo(symbol, market):
     if last: raise last
     raise ValueError("야후 연결 실패")
 
+def coinbase_crypto(symbol, now=None):
+    """Coinbase public daily candles for USD crypto pairs. No API key required."""
+    if not is_crypto(symbol): raise ValueError("암호화폐 심볼 형식 오류")
+    now = now or datetime.now(UTC)
+    end = now.astimezone(UTC)
+    start = end - timedelta(days=299)
+    raw = _get("https://api.exchange.coinbase.com/products/"+urllib.parse.quote(symbol, safe="-")+"/candles", {
+        "granularity": 86400,
+        "start": start.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "end": end.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }, retries=2)
+    try:
+        d = json.loads(raw)
+        if not isinstance(d, list): raise ValueError
+        rows = []
+        for r in d:
+            if not isinstance(r, list) or len(r) < 6: raise ValueError
+            ts, low, high, opn, close, vol = r[:6]
+            rows.append({"date": datetime.fromtimestamp(float(ts), UTC).date().isoformat(),
+                         "open": float(opn), "high": float(high), "low": float(low),
+                         "close": float(close), "volume": float(vol)})
+        return rows
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raise ValueError("Coinbase 일봉 형식 오류") from None
+
 _TD_LAST_REQUEST = 0.0
 
 def twelvedata(symbol, key):
@@ -286,13 +311,20 @@ def fetch_security(code, mkt, is_etf, gov_key, now=None):
     if mkt == "KR" and not KR_CODE.match(code): raise ValueError("국내 코드 형식 아님")
     bars, source, sym, empty = [], None, None, 0
     if mkt == "US" and is_crypto(code):
-        # Twelve Data의 주식 심볼 경로에 BTC-USD/ADA-USD를 넣으면 404가 날 수 있다.
-        # 암호화폐는 Yahoo의 -USD 심볼을 직접 쓰고, 주말을 포함한 UTC 완결 일봉을 유지한다.
-        raw, meta = yahoo(code, "US")
-        bars, empty = clean(raw, "US", now, continuous=True)
-        source, sym = "yahoo-crypto", code
+        # 암호화폐는 24/7 자산이라 주식 제공자와 분리한다.
+        # Coinbase 공개 일봉을 우선하고, 실패할 때만 Yahoo -USD 심볼을 보조로 쓴다.
         rec["assetClass"] = "crypto"
-        rec["providerName"] = meta["name"]
+        try:
+            raw = coinbase_crypto(code, now)
+            bars, empty = clean(raw, "US", now, continuous=True)
+            source, sym = "coinbase", code
+            rec["providerName"] = code
+        except Exception as cb_err:
+            rec["warnings"].append("Coinbase 실패: "+(str(cb_err) if isinstance(cb_err, (ValueError, ProviderHTTPError)) else type(cb_err).__name__))
+            raw, meta = yahoo(code, "US")
+            bars, empty = clean(raw, "US", now, continuous=True)
+            source, sym = "yahoo-crypto", code
+            rec["providerName"] = meta["name"]
     elif mkt == "US":
         key = os.environ.get("TWELVE_DATA_API_KEY", "").strip()
         if key:
@@ -442,7 +474,7 @@ def failure_kind(error):
     e = str(error or "")
     if "429" in e: return "요청 제한"
     if "네트워크" in e or "시간 초과" in e or "연결 실패" in e: return "연결 실패"
-    if "404" in e or "응답 없음" in e or "미지원" in e: return "티커·제공자"
+    if "404" in e or "응답 없음" in e or "미지원" in e or "Coinbase" in e: return "티커·제공자"
     if "인증" in e or "401" in e or "403" in e: return "인증·접근"
     if "일봉 부족" in e or "완결 봉 없음" in e: return "일봉 부족"
     if "형식" in e or "불일치" in e or "누락" in e or "중복 날짜" in e: return "자료 검증"

@@ -251,6 +251,38 @@ class GovernmentHistoricalGap(unittest.TestCase):
             with self.assertRaises(ValueError):
                 P.fetch_security('005930', 'KR', False, 'test-key', NOW)
 
+class CoinbaseCrypto(unittest.TestCase):
+    def test_public_candles_parse(self):
+        from unittest.mock import patch
+        now = datetime(2026, 9, 21, 7, 0, tzinfo=timezone.utc)
+        payload = json.dumps([
+            [int(datetime(2026,9,20,tzinfo=timezone.utc).timestamp()), 100, 120, 105, 115, 1234],
+            [int(datetime(2026,9,19,tzinfo=timezone.utc).timestamp()), 95, 110, 100, 105, 1111],
+        ])
+        with patch.object(P, "_get", return_value=payload) as req:
+            rows = P.coinbase_crypto("BTC-USD", now)
+        self.assertEqual(rows[0]["date"], "2026-09-20")
+        self.assertEqual(rows[0]["open"], 105.0); self.assertEqual(rows[0]["close"], 115.0)
+        self.assertIn("/products/BTC-USD/candles", req.call_args.args[0])
+        self.assertEqual(req.call_args.args[1]["granularity"], 86400)
+
+    def test_crypto_prefers_coinbase_without_yahoo(self):
+        from unittest.mock import patch
+        now = datetime(2026, 9, 21, 7, 0, tzinfo=timezone.utc)
+        raw = bars(20, end=datetime(2026,9,20,tzinfo=timezone.utc).date())
+        with patch.object(P, "coinbase_crypto", return_value=raw) as cb, patch.object(P, "yahoo") as y:
+            r = P.fetch_security("BTC-USD", "US", False, "", now)
+        self.assertEqual(r["source"], "coinbase"); self.assertEqual(r["assetClass"], "crypto")
+        self.assertEqual(r["bars"][-1]["date"], "2026-09-20"); cb.assert_called_once(); y.assert_not_called()
+
+    def test_crypto_falls_back_to_yahoo(self):
+        from unittest.mock import patch
+        now = datetime(2026, 9, 21, 7, 0, tzinfo=timezone.utc)
+        raw = bars(20, end=datetime(2026,9,20,tzinfo=timezone.utc).date())
+        with patch.object(P, "coinbase_crypto", side_effect=ValueError("down")), patch.object(P, "yahoo", return_value=(raw, {"name":"Bitcoin","exchange":"CCC"})) as y:
+            r = P.fetch_security("BTC-USD", "US", False, "", now)
+        self.assertEqual(r["source"], "yahoo-crypto"); self.assertTrue(r["warnings"]); y.assert_called_once()
+
 class YahooFallbackAndCrypto(unittest.TestCase):
     def test_yahoo_uses_query2_after_query1_429(self):
         from unittest.mock import patch
@@ -267,7 +299,7 @@ class YahooFallbackAndCrypto(unittest.TestCase):
     def test_crypto_bypasses_twelve_data_and_marks_asset_class(self):
         from unittest.mock import patch
         raw = bars(20, end=datetime(2026,9,20,tzinfo=timezone.utc).date())
-        with patch.dict(os.environ, {"TWELVE_DATA_API_KEY":"fake-key"}), patch.object(P, "yahoo", return_value=(raw, {"name":"Bitcoin","exchange":"CCC"})) as y, patch.object(P, "twelvedata") as td:
+        with patch.dict(os.environ, {"TWELVE_DATA_API_KEY":"fake-key"}), patch.object(P, "coinbase_crypto", side_effect=ValueError("down")), patch.object(P, "yahoo", return_value=(raw, {"name":"Bitcoin","exchange":"CCC"})) as y, patch.object(P, "twelvedata") as td:
             r = P.fetch_security("BTC-USD", "US", False, "", datetime(2026,9,21,7,0,tzinfo=timezone.utc))
         self.assertEqual(r["source"], "yahoo-crypto"); self.assertEqual(r["assetClass"], "crypto")
         self.assertEqual(r["bars"][-1]["date"], "2026-09-20"); y.assert_called_once(); td.assert_not_called()
