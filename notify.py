@@ -62,6 +62,30 @@ def send(token,chat,text):
     with urlopen(req,timeout=20) as r:reply=json.load(r)
     if not reply.get('ok'):raise RuntimeError('Telegram rejected message')
 
+def data_status(patch, now):
+    updates=patch.get('updates',[]); stale=0; dates={}
+    for u in updates:
+        try:
+            age=(now-datetime.fromisoformat(u['quoteAsOf'])).total_seconds()
+            if not 0<=age<=5*86400:stale+=1
+        except (ValueError,KeyError,TypeError):stale+=1
+        dates.setdefault(u.get('mkt','?'),set()).add(str(u.get('quoteDate','미확인')))
+    failed=len(patch.get('failures',[]))
+    label='partial' if failed or stale or not updates else 'ok'
+    lines=[f'수집 성공 {len(updates)} / 실패 {failed} 보유항목',f'5일 초과·시각 미확인 {stale}항목']
+    for market,ds in sorted(dates.items()):
+        ordered=sorted(ds); span=ordered[0] if len(ordered)==1 else ordered[0]+' ~ '+ordered[-1]
+        lines.append(('국내' if market=='KR' else '해외')+' 종가 기준일: '+span)
+    return label,'\n'.join(lines)
+
+def health_message(previous,current,detail):
+    if previous==current:return None
+    if current=='collection_failed':return '[수집 중단]\n이번 실행에서 수집을 완료하지 못했습니다. 기존 리포트를 유지하며 이번 시세 알림은 보류합니다.'
+    if current=='publish_failed':return '[리포트 갱신 실패]\n수집 후 게시를 완료하지 못했습니다. 이번 시세 알림은 보류합니다.'
+    if current=='partial':return '[시세 자료 확인 필요]\n'+detail
+    if current=='ok' and previous and previous!='ok':return '[수집·리포트 복구]\n'+detail
+    return None
+
 def main(sender=send):
     token=os.getenv('TELEGRAM_BOT_TOKEN','').strip();chat=os.getenv('TELEGRAM_CHAT_ID','').strip()
     if not token or not chat:print('Telegram not configured; report remains available.');return
@@ -69,8 +93,23 @@ def main(sender=send):
     if len(password)<8:raise ValueError('Password missing')
     # Corrupt state must stop sending, never silently reset deduplication.
     state=json.loads(decrypt(json.loads(path.read_text()),password)) if path.exists() else {'rules':{},'sent':[]}
+    outcome=os.getenv('COLLECTION_OUTCOME','success')
+    deployed=os.getenv('DEPLOY_OUTCOME','success')
+    if outcome!='success' or deployed!='success':
+        health='collection_failed' if outcome!='success' else 'publish_failed'
+        message=health_message(state.get('health'),health,'')
+        if message:
+            sender(token,chat,message+'\n실행 내역: https://github.com/drkim7/portfolio-collector/actions')
+            state['health']=health;save(path,state,password)
+        print('Notification health check complete.');return
     patch=json.loads(decrypt(json.loads(Path('site/quotes-patch.enc').read_text()),password))
     holdings,_,_=load_holdings();now=datetime.now(timezone.utc)
+    health,detail=data_status(patch,now)
+    message=health_message(state.get('health'),health,detail)
+    if message:
+        sender(token,chat,message+'\n'+DESK)
+        state['health']=health;save(path,state,password);time.sleep(1.1)
+    else:state['health']=health
     planned,events=evaluate(holdings,patch,state,now)
     sent=set(state.get('sent',[]));planned['sent']=list(sent)
     if not state.get('initialized'):
@@ -82,8 +121,10 @@ def main(sender=send):
     other=[e for e in events if not e['urgent']]
     day=now.astimezone(__import__('zoneinfo').ZoneInfo('Asia/Seoul')).date().isoformat()
     summary_key='summary:'+day
-    if other and summary_key not in sent:
-        text='[일봉 변화 요약]\n'+'\n\n'.join(e['text'] for e in other)
+    if summary_key not in sent:
+        text='[일일 시세 점검] '+day+'\n'+detail+'\n\n'
+        text+=('\n\n'.join(e['text'] for e in other) if other else '새 기술 조건 전환 없음. 미확인·실패 항목의 안전을 의미하지 않습니다.')
+        text+='\n매매 기준 알림 '+str(sum(e['urgent'] for e in events))+'건 (개별 전송)'
         if len(text)>2800:text=text[:2700]+'\n…나머지는 투자 데스크에서 확인하세요.'
         messages.append((summary_key,text))
     # Keep old rule states until all messages finish; successful sends are checkpointed independently.

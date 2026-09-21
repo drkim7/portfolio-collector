@@ -42,9 +42,11 @@ jobs:
         run: pip install --quiet cryptography
 
       - name: 자체 검증 (가짜 네트워크, 실패하면 여기서 멈춤)
+        id: verify
         run: python3 -m unittest test_pipeline test_notify
 
       - name: 수집·계산·리포트
+        id: collect
         env:
           HOLDINGS_JSON: ${{ secrets.HOLDINGS_JSON }}      # 보유내역 (비밀)
           REPORT_PASSWORD: ${{ secrets.REPORT_PASSWORD }}  # 없거나 8자 미만이면 아무것도 만들지 않고 중단
@@ -78,8 +80,11 @@ jobs:
 
       - name: 텔레그램 알림 (미설정 시 건너뜀)
         id: notify
+        if: ${{ always() && steps.verify.outcome == 'success' && (steps.collect.outcome == 'success' || steps.collect.outcome == 'failure') }}
         continue-on-error: true
         env:
+          COLLECTION_OUTCOME: ${{ steps.collect.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
           HOLDINGS_JSON: ${{ secrets.HOLDINGS_JSON }}
           REPORT_PASSWORD: ${{ secrets.REPORT_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -87,9 +92,11 @@ jobs:
         run: python3 notify.py
 
       - name: 암호화된 알림 상태 저장
-        if: ${{ always() && steps.deploy.outcome == 'success' && steps.notify.outcome != 'skipped' }}
+        if: ${{ always() && (steps.notify.outcome == 'success' || steps.notify.outcome == 'failure') }}
         run: |
           if [ ! -f state/alerts.enc ]; then exit 0; fi
+          git config user.name "portfolio-bot"
+          git config user.email "bot@users.noreply.github.com"
           git add state/alerts.enc
           if git diff --cached --quiet; then exit 0; fi
           git commit -m "Update encrypted notification state"

@@ -22,7 +22,6 @@ class Alerts(unittest.TestCase):
  def test_changed_rule_baseline(self):
   s,_=evaluate(H,patch(17,100),{},NOW)
   _,e=evaluate([dict(H[0],stop=105)],patch(21,100),s,NOW);self.assertEqual(e,[])
-if __name__=='__main__':unittest.main()
 
 class Delivery(unittest.TestCase):
  def test_no_keys_no_send(self):
@@ -44,3 +43,50 @@ class Delivery(unittest.TestCase):
      with self.assertRaises(Exception):main(sender)
     sender.assert_not_called()
    finally:os.chdir(cwd)
+
+class Health(unittest.TestCase):
+ def test_status_counts_dates_and_empty(self):
+  from notify import data_status
+  p=patch(18,100);p['updates'][0]['quoteDate']='2026-09-18'
+  status,detail=data_status(p,NOW)
+  self.assertEqual(status,'ok');self.assertIn('2026-09-18',detail)
+  p['failures']=[{'id':'other'}]
+  self.assertEqual(data_status(p,NOW)[0],'partial')
+  self.assertEqual(data_status({},NOW)[0],'partial')
+  self.assertEqual(data_status(patch(1,100),NOW)[0],'partial')
+ def test_transitions(self):
+  from notify import health_message
+  self.assertIsNone(health_message('partial','partial',''))
+  self.assertIsNone(health_message(None,'ok',''))
+  self.assertIn('복구',health_message('collection_failed','ok',''))
+  self.assertIn('갱신 실패',health_message('ok','publish_failed',''))
+ def test_failure_once_recovery_and_daily_summary(self):
+  import tempfile,os,json
+  from pathlib import Path
+  from unittest.mock import patch as mockpatch, Mock
+  from notify import main,save
+  from pipeline import decrypt,encrypt
+  sender=Mock();cwd=os.getcwd();password='fixture-password'
+  env={'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture','REPORT_PASSWORD':password,'COLLECTION_OUTCOME':'failure','DEPLOY_OUTCOME':'skipped'}
+  with tempfile.TemporaryDirectory() as tmp:
+   try:
+    os.chdir(tmp)
+    original={'initialized':True,'rules':{'keep':{'date':'2026-09-18','active':False}},'sent':[]}
+    save(Path('state/alerts.enc'),original,password)
+    with mockpatch.dict('os.environ',env,clear=True), mockpatch('notify.time.sleep'), mockpatch('notify.load_holdings',return_value=(H,{},None)), mockpatch('notify.datetime') as clock:
+     clock.now.return_value=NOW;clock.fromisoformat.side_effect=datetime.fromisoformat
+     main(sender);main(sender)
+     self.assertEqual(sender.call_count,1)
+     state=json.loads(decrypt(json.loads(Path('state/alerts.enc').read_text()),password))
+     self.assertEqual(state['rules'],original['rules'])
+     self.assertEqual(state['health'],'collection_failed')
+     os.environ['COLLECTION_OUTCOME']='success';os.environ['DEPLOY_OUTCOME']='success'
+     Path('site').mkdir();p=patch(18,100);p['updates'][0]['quoteDate']='2026-09-18'
+     Path('site/quotes-patch.enc').write_text(json.dumps(encrypt(json.dumps(p),password)))
+     main(sender);main(sender)
+     self.assertEqual(sender.call_count,3)
+     self.assertIn('복구',sender.call_args_list[1].args[2])
+     self.assertIn('일일 시세 점검',sender.call_args_list[2].args[2])
+   finally:os.chdir(cwd)
+
+if __name__=='__main__':unittest.main()
