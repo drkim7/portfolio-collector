@@ -317,6 +317,58 @@ function diagnoseQuoteSetup() {
   }));
 }
 
+// 라이브 호출 권한 없이도 trigger/시트/행의 신선도를 한 번에 확인하는 진단.
+function diagnoseSpotFeed() {
+  const props=PropertiesService.getScriptProperties(), now=Date.now();
+  const last=props.getProperty('LAST_COLLECTION');
+  const triggers=ScriptApp.getProjectTriggers()
+    .filter(t=>t.getHandlerFunction()==='checkStockAlerts');
+  const sheet=quoteSheet_(), n=sheet.getLastRow()-FIRST_ROW+1;
+  const rows=n>0?sheet.getRange(FIRST_ROW,1,n,12).getValues():[];
+  let fresh=0, stale=0, unavailable=0;
+  const samples=[];
+  rows.forEach(r=>{
+    const ticker=String(r[0]||'').trim().toUpperCase();
+    if(!ticker)return;
+    const status=String(r[8]||'');
+    const valid=status.startsWith('조회 성공')&&!status.includes('앱 미전달')
+      &&r[11]===ticker&&r[6] instanceof Date&&typeof r[3]==='number'&&r[3]>0;
+    let reason='unavailable', ageMin=null;
+    if(valid){
+      const fr=freshness_(ticker,{quoteAsOf:r[6].toISOString(),regularStart:null,regularEnd:null});
+      ageMin=fr.ageMinutes;
+      reason=fr.stale?'stale':'fresh';
+    }else if(status.includes('앱 미전달')) reason='stale';
+    if(reason==='fresh')fresh++;
+    else if(reason==='stale')stale++;
+    else unavailable++;
+    if(['PAAS','BTC-USD','476040.KQ','476040.KS'].includes(ticker))
+      samples.push({ticker,reason,ageMin,quoteAsOf:r[6] instanceof Date?r[6].toISOString():null,
+        fetchedAt:r[7] instanceof Date?r[7].toISOString():null,status});
+  });
+  const collectionAgeMin=last&&Number.isFinite(Date.parse(last))
+    ?Math.round((now-Date.parse(last))/60000):null;
+  console.log(JSON.stringify({
+    triggerCount:triggers.length,lastCollection:last||null,collectionAgeMin,
+    total:rows.length,fresh,stale,unavailable,samples
+  },null,2));
+}
+
+// 실제 Yahoo/네이버 원격 시세가 갱신되는지 sheet 저장 없이 3종목만 검사.
+function diagnoseLiveQuoteSources() {
+  ['BTC-USD','PAAS','476040.KQ'].forEach(ticker=>{
+    try{
+      const q=yahooQuote_(ticker),fr=freshness_(ticker,q);
+      console.log(JSON.stringify({ticker,source:q.source||q.mode,
+        quoteAsOf:q.quoteAsOf,ageMin:fr.ageMinutes,stale:fr.stale,
+        // 가격 자체는 진단에 필수 아니므로 로그에 남기지 않음.
+        status:statusText_(q,fr)}));
+    }catch(e){
+      console.log(JSON.stringify({ticker,error:/^HTTP \d+$/.test(e.message)?e.message:'quote_fetch_failed'}));
+    }
+  });
+}
+
 function testFirstQuote() {
   const s=quoteSheet_(), ticker=String(s.getRange(FIRST_ROW,1).getValue()).trim().toUpperCase();
   if(!ticker||!validTicker_(ticker))throw new Error('첫 데이터 행의 티커를 확인하세요');
@@ -349,14 +401,22 @@ function doPost(e){
       rows.forEach(r=>{
         const ticker=String(r[0]).trim().toUpperCase();if(!ticker||seen[ticker])return;seen[ticker]=true;
         const status=String(r[8]||'');
-        const valid=status.startsWith('조회 성공')&&!status.includes('앱 미전달')
+        const rowValid=status.startsWith('조회 성공')&&!status.includes('앱 미전달')
           &&r[11]===ticker&&r[6] instanceof Date&&r[7] instanceof Date&&typeof r[3]==='number'&&r[3]>0;
-        if(valid) quotes.push({
+        // 15분 트리거가 멈춘 뒤에도 과거 '조회 성공'이 시트에 남을 수 있다.
+        // 앱이 가져가는 바로 그 순간에 다시 시세 시각을 검사한다.
+        const fr=rowValid ? freshness_(ticker,{
+          quoteAsOf:r[6].toISOString(),regularStart:null,regularEnd:null
+        }) : null;
+        if(rowValid&&!fr.stale) quotes.push({
           ticker,price:r[3],currency:r[9],
           quoteAsOf:r[6].toISOString(),collectedAt:r[7].toISOString(),
           source:status.includes('네이버')?'Naver · Apps Script':'Yahoo · Apps Script',status
         });
-        else failures.push({ticker,reason:status.includes('앱 미전달')?'stale':'unavailable'});
+        else failures.push({
+          ticker,
+          reason:status.includes('앱 미전달')||(fr&&fr.stale)?'stale':'unavailable'
+        });
       });
       return jsonOutput_({ok:true,kind:'portfolio-spot-v1',collectedAt:p.getProperty('LAST_COLLECTION'),quotes,failures});
     } finally {lock.releaseLock();}
