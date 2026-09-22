@@ -7,8 +7,14 @@ const CLOSED_MAX_AGE_MS = 96 * 60 * 60 * 1000;
 
 function quoteSheet_() {
   const id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
-  if (!id) throw new Error('먼저 setupQuoteSheet를 실행하세요');
-  const sheet = SpreadsheetApp.openById(id).getSheetByName(QUOTE_SHEET);
+  if (!id) throw new Error('SPREADSHEET_ID 없음 · setupQuoteSheet를 먼저 실행하세요');
+  let ss;
+  try {
+    ss = SpreadsheetApp.openById(id);
+  } catch (_) {
+    throw new Error('SPREADSHEET_ID 접근 실패 · 현재 계정이 해당 Google Sheet 편집 권한을 갖는지 확인하고 setupQuoteSheet를 다시 실행하세요');
+  }
+  const sheet = ss.getSheetByName(QUOTE_SHEET);
   if (!sheet) throw new Error('시트1 탭을 확인하세요');
   return sheet;
 }
@@ -52,6 +58,61 @@ function marketOpenGuess_(ticker, now) {
   return kr ? hm >= 900 && hm <= 1530 : hm >= 930 && hm <= 1600;
 }
 
+function krCode_(ticker) {
+  const m = String(ticker||'').toUpperCase().match(/^(\d{6})\.(KS|KQ)$/);
+  return m ? m[1] : null;
+}
+
+function naverNumber_(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(String(v).replace(/,/g,'').trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+function naverKrQuote_(ticker) {
+  const code = krCode_(ticker);
+  if (!code) throw new Error('네이버 국내 티커 형식 아님');
+  const url = 'https://polling.finance.naver.com/api/realtime/domestic/stock/'+encodeURIComponent(code);
+  const r = UrlFetchApp.fetch(url, {
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: {'User-Agent':'Mozilla/5.0 (compatible; personal-portfolio/1.0)'}
+  });
+  if (r.getResponseCode() !== 200) throw new Error('NAVER HTTP '+r.getResponseCode());
+  let payload;
+  try { payload = JSON.parse(r.getContentText()); }
+  catch (_) { throw new Error('네이버 응답 해석 오류'); }
+  const d = payload && payload.datas && payload.datas[0];
+  if (!d) throw new Error('네이버 시세 없음');
+  const price = naverNumber_(d.closePrice);
+  const changeRaw = naverNumber_(d.compareToPreviousClosePrice);
+  const changePct = naverNumber_(d.fluctuationsRatio);
+  if (!Number.isFinite(price) || price <= 0) throw new Error('네이버 가격 확인 실패');
+
+  let change = changeRaw;
+  const direction = d.compareToPreviousPrice && d.compareToPreviousPrice.name || '';
+  if (change !== null && direction === 'FALLING' && change > 0) change = -change;
+  const prev = change !== null ? price - change : null;
+
+  const at = Date.parse(d.localTradedAt || '');
+  if (!Number.isFinite(at) || at <= 0 || at > Date.now()+60000) throw new Error('네이버 시세 시각 확인 실패');
+
+  return {
+    ticker,
+    price,
+    currency:'KRW',
+    quoteAsOf:new Date(at).toISOString(),
+    collectedAt:new Date().toISOString(),
+    previousClose:Number.isFinite(prev) && prev>0 ? prev : null,
+    changePct:Number.isFinite(changePct) ? changePct : (Number.isFinite(prev)&&prev>0 ? (price/prev-1)*100 : null),
+    mode:'naver-realtime',
+    marketStatus:String(d.marketStatus||''),
+    regularStart:null,
+    regularEnd:null,
+    source:'Naver Finance polling'
+  };
+}
+
 function yahooChart_(ticker, interval, range) {
   let lastCode = null;
   for (let i=0;i<YAHOO_HOSTS.length;i++) {
@@ -89,6 +150,17 @@ function latestBar_(result) {
 
 function yahooQuote_(ticker) {
   const now = new Date();
+
+  // 국내 주식은 장중 현재가 정확도를 위해 네이버 공개 polling을 우선 사용한다.
+  // 실패할 때만 기존 Yahoo 경로로 되돌아간다.
+  if (krCode_(ticker)) {
+    try {
+      return naverKrQuote_(ticker);
+    } catch (naverErr) {
+      // 아래 Yahoo fallback으로 진행. 응답 원문/URL은 로그에 남기지 않는다.
+    }
+  }
+
   const wantIntraday = marketOpenGuess_(ticker, now);
   let result, mode;
   try {
@@ -127,7 +199,8 @@ function yahooQuote_(ticker) {
     changePct: prev ? (chosen.price/prev-1)*100 : null,
     mode,
     regularStart: Number.isFinite(Number(regular.start)) ? Number(regular.start)*1000 : null,
-    regularEnd: Number.isFinite(Number(regular.end)) ? Number(regular.end)*1000 : null
+    regularEnd: Number.isFinite(Number(regular.end)) ? Number(regular.end)*1000 : null,
+    source:'Yahoo'
   };
 }
 
@@ -151,9 +224,10 @@ function statusText_(quote, freshness) {
       : '조회 성공 · 오래된 마지막 시세 · 앱 미전달';
   }
   if (freshness.expectedLive) {
+    if (quote.mode === 'naver-realtime') return '조회 성공 · 네이버 장중 시세';
     return quote.mode === 'intraday-5m'
-      ? '조회 성공 · 장중 5분봉 · 지연 가능'
-      : '조회 성공 · 장중 메타 시세 · 지연 가능';
+      ? '조회 성공 · Yahoo 장중 5분봉 · 지연 가능'
+      : '조회 성공 · Yahoo 장중 메타 시세 · 지연 가능';
   }
   return '조회 성공 · 장외/휴장 · 마지막 시세';
 }
@@ -215,11 +289,39 @@ function sendTelegram(message) {
 }
 function testAlert(){if(!sendTelegram('Apps Script 시세 알림 연결 완료'))throw new Error('스크립트 속성의 텔레그램 설정을 확인하세요');}
 
+function diagnoseQuoteSetup() {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('SPREADSHEET_ID');
+  console.log('1/4 SPREADSHEET_ID 설정: '+(id ? '예' : '아니오'));
+  if (!id) throw new Error('SPREADSHEET_ID 없음 · setupQuoteSheet를 먼저 실행하세요');
+
+  let ss;
+  try {
+    ss = SpreadsheetApp.openById(id);
+    console.log('2/4 Google Sheet 접근: 성공 · '+ss.getName());
+  } catch (e) {
+    console.log('2/4 Google Sheet 접근: 실패');
+    throw new Error('Google Sheet 접근 권한 문제 · 이 Apps Script를 실행하는 Google 계정이 대상 시트의 편집자인지 확인하세요');
+  }
+
+  const s = ss.getSheetByName(QUOTE_SHEET);
+  if (!s) throw new Error('3/4 시트1 탭 없음');
+  const ticker = String(s.getRange(FIRST_ROW,1).getValue()).trim().toUpperCase();
+  console.log('3/4 첫 티커: '+(ticker || '없음'));
+  if (!ticker || !validTicker_(ticker)) throw new Error('첫 데이터 행 티커 형식 확인');
+
+  const q = yahooQuote_(ticker), fr = freshness_(ticker,q);
+  console.log('4/4 시세 조회: '+JSON.stringify({
+    ticker:q.ticker, source:q.source||q.mode, price:q.price,
+    quoteAsOf:q.quoteAsOf, status:statusText_(q,fr), ageMinutes:fr.ageMinutes
+  }));
+}
+
 function testFirstQuote() {
   const s=quoteSheet_(), ticker=String(s.getRange(FIRST_ROW,1).getValue()).trim().toUpperCase();
   if(!ticker||!validTicker_(ticker))throw new Error('첫 데이터 행의 티커를 확인하세요');
   const q=yahooQuote_(ticker), fr=freshness_(ticker,q);
-  console.log(JSON.stringify({ok:true,mode:q.mode,price:q.price,quoteAsOf:q.quoteAsOf,status:statusText_(q,fr),ageMinutes:fr.ageMinutes}));
+  console.log(JSON.stringify({ok:true,source:q.source||q.mode,mode:q.mode,price:q.price,quoteAsOf:q.quoteAsOf,status:statusText_(q,fr),ageMinutes:fr.ageMinutes}));
 }
 
 function installQuoteTrigger(){
@@ -252,7 +354,7 @@ function doPost(e){
         if(valid) quotes.push({
           ticker,price:r[3],currency:r[9],
           quoteAsOf:r[6].toISOString(),collectedAt:r[7].toISOString(),
-          source:'Yahoo · Apps Script',status
+          source:status.includes('네이버')?'Naver · Apps Script':'Yahoo · Apps Script',status
         });
         else failures.push({ticker,reason:status.includes('앱 미전달')?'stale':'unavailable'});
       });

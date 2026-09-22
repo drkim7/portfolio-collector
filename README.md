@@ -51,3 +51,6 @@
 portfolio-quotes.gs는 기술분석용 일봉 수집기와 별도다. 장중에는 Yahoo 5분봉/메타의 가장 최근 시각을 사용하고, query1 제한 시 query2를 재시도한다. 장중·crypto에서 30분 넘게 오래된 시세는 시트에 마지막 관측값으로 남겨도 앱 feed에는 전달하지 않는다. 장외·휴장에서는 마지막 시세를 최대 96시간 허용한다.
 
 앱은 이 spot feed를 평가액/장중 참고에만 사용하고, RSI·MACD·이평선·ATR 및 손실복구 코치의 확정 단계는 GitHub collector가 제공하는 완결 일봉으로 계산해야 한다.
+
+### 국내 장중 spot 개선 (2026-09-22)
+국내 .KS/.KQ 종목의 장중 spot은 네이버 금융 공개 polling JSON을 우선 사용하고, 실패 시 Yahoo로 fallback합니다. 네이버 응답의 closePrice/localTradedAt를 사용하며 장중 30분 이상 오래된 값은 앱 feed에 전달하지 않습니다. 이 경로는 공개 웹 데이터에 의존하므로 영구 API SLA가 없고 형식 변경 시 실패할 수 있습니다. `diagnoseQuoteSetup()`으로 Google Sheet 권한과 첫 티커 시세를 한 번에 점검할 수 있습니다.
