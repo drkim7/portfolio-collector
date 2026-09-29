@@ -135,4 +135,80 @@ class DigestQueue(unittest.TestCase):
      self.assertEqual(sender.call_count,2);self.assertEqual(load()['pending'],[])
    finally:os.chdir(cwd)
 
+class SmartTransitions(unittest.TestCase):
+ def test_breakout_lifecycle_reference_and_replay(self):
+  from smart_alerts import breakout_transition
+  bars=[{'date':f'2025-{(j//28)+1:02d}-{(j%28)+1:02d}','close':100,'high':101,'low':99,'volume':1000} for j in range(253)]
+  s,e=breakout_transition(bars,None);self.assertEqual(s['state'],'below');self.assertIsNone(e)
+  def bar(date,close,volume=1000):return {'date':date,'close':close,'high':max(close,101),'low':close-1,'volume':volume}
+  bars.append(bar('2026-01-01',102,2000));s,e=breakout_transition(bars,s)
+  self.assertEqual(e['state'],'first-break');self.assertEqual(e['reference'],101);self.assertGreater(e['volumeRatio'],1.5)
+  same,event=breakout_transition(bars,s);self.assertEqual(same,s);self.assertIsNone(event)
+  bars.append(bar('2026-01-02',102));s,e=breakout_transition(bars,s);self.assertEqual(e['state'],'holding')
+  bars.append(bar('2026-01-05',100));s,e=breakout_transition(bars,s);self.assertEqual(e['state'],'failed')
+  bars.append(bar('2026-01-06',102));s,e=breakout_transition(bars,s);self.assertEqual(e['state'],'re-break')
+  self.assertIsNone(breakout_transition(bars[:252],None)[0])
+ def test_recovery_missing_inputs_fail_closed(self):
+  from smart_alerts import condition_recovery
+  h={'recovery':{'tranches':[{'id':'1','conditions':[{'type':'ma20'},{'type':'thesis'}]}]}}
+  bars=[{'date':'2026-09-01','close':100}]*20
+  self.assertFalse(condition_recovery(h,bars)[0][1]);h['tech']={'thesis':'valid'}
+  self.assertFalse(condition_recovery(h,bars)[0][1]);bars[-1]={'date':'2026-09-02','close':110}
+  self.assertTrue(condition_recovery(h,bars)[0][1])
+ def test_volume_and_average_are_state_transitions(self):
+  h=[dict(H[0],buy=105)]
+  b=[{'date':f'2026-08-{j+1:02d}','close':100,'high':101,'low':99,'volume':1000} for j in range(20)]
+  def run(s,date,price,vol):
+   u={'id':'x','name':'Fixture','acct':'Test','mkt':'KR','quoteAsOf':'2026-09-21T18:00:00+09:00','quoteDate':date,'price':price,'bars':b+[{'date':date,'close':price,'high':price+1,'low':price-1,'volume':vol}]}
+   return evaluate(h,{'updates':[u]},s,NOW)
+  s,e=run({},'2026-09-18',100,1000);self.assertFalse(e)
+  s,e=run(s,'2026-09-19',106,2000);self.assertTrue(any('평단' in x['label'] for x in e));self.assertTrue(any('거래량' in x['label'] for x in e))
+  _,e=run(s,'2026-09-19',106,2000);self.assertFalse(e)
+ def test_weekend_crypto_and_equity_bar_filter(self):
+  from pipeline import patch_bars
+  from datetime import datetime,timezone
+  now=datetime(2026,9,29,12,tzinfo=timezone.utc)
+  bars=[{'date':'2026-09-25'},{'date':'2026-09-26'},{'date':'2026-09-27'}]
+  self.assertEqual(len(patch_bars({'bars':bars,'assetClass':'crypto','mkt':'US'},now)),3)
+  self.assertEqual(len(patch_bars({'bars':bars,'assetClass':'equity','mkt':'US'},now)),1)
+ def test_categories_and_replayed_bar(self):
+  h=[dict(H[0],buy=105,target=105)]
+  bars=[dict(date=f'2026-08-{j+1:02d}',close=100,high=101,low=99,volume=1000) for j in range(20)]
+  def data(day,close,volume):return {'updates':[dict(id='x',name='Fixture',acct='Test',mkt='KR',price=close,quoteDate=day,quoteAsOf='2026-09-21T15:30:00+09:00',bars=bars+[dict(date=day,close=close,high=close+1,low=close-1,volume=volume)])]}
+  state,_=evaluate(h,data('2026-09-18',100,1000),{},NOW)
+  state,events=evaluate(h,data('2026-09-19',106,2000),state,NOW,enabled_types={'volume'})
+  self.assertEqual({e['kind'] for e in events},{'volume-high'})
+  _,again=evaluate(h,data('2026-09-19',106,2000),state,NOW)
+  self.assertFalse(again)
+
+class SmartDelivery(unittest.TestCase):
+ def test_group_cap_and_pending_next_day(self):
+  import tempfile,os,json
+  from pathlib import Path
+  from unittest.mock import patch as mockpatch,Mock
+  from notify import main,save
+  from pipeline import encrypt,decrypt
+  password='fixture-password';cwd=os.getcwd();sender=Mock()
+  holdings=[dict(H[0],buy=105,target=105),dict(H[0],id='y',name='Other',buy=105,target=105)]
+  bars=[dict(date=f'2026-08-{j+1:02d}',close=100,high=101,low=99,volume=1000) for j in range(20)]
+  def data(date,close,volume):
+   return {'updates':[dict(id=h['id'],name=h['name'],acct=h['acct'],mkt=h['mkt'],price=close,quoteDate=date,quoteAsOf='2026-09-21T15:30:00+09:00',bars=bars+[dict(date=date,close=close,high=close+1,low=close-1,volume=volume)]) for h in holdings]}
+  initial,_=evaluate(holdings,data('2026-09-18',100,1000),{},NOW);initial['initialized']=True
+  with tempfile.TemporaryDirectory() as tmp:
+   try:
+    os.chdir(tmp);Path('site').mkdir();save(Path('state/alerts.enc'),initial,password)
+    Path('site/quotes-patch.enc').write_text(json.dumps(encrypt(json.dumps(data('2026-09-21',106,2000)),password)))
+    env={'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture','REPORT_PASSWORD':password,'SMART_ALERT_DAILY_CAP':'1','SMART_ALERT_HEALTH':'0'}
+    with mockpatch.dict('os.environ',env,clear=True),mockpatch('notify.time.sleep'),mockpatch('notify.load_holdings',return_value=(holdings,{},None)),mockpatch('notify.datetime') as clock:
+     clock.fromisoformat.side_effect=datetime.fromisoformat;clock.now.return_value=datetime(2026,9,21,7,40,tzinfo=timezone.utc)
+     main(sender)
+     stored=lambda:json.loads(decrypt(json.loads(Path('state/alerts.enc').read_text()),password))
+     self.assertGreaterEqual(sender.call_count,1)
+     self.assertIn('중요 변화',sender.call_args_list[0].args[2]);self.assertIn('평단',sender.call_args_list[0].args[2]);self.assertIn('목표가',sender.call_args_list[0].args[2])
+     self.assertEqual(len({e['itemId'] for e in stored()['pending']}),1)
+     clock.now.return_value=datetime(2026,9,22,7,40,tzinfo=timezone.utc);main(sender)
+     self.assertEqual(stored()['pending'],[])
+     self.assertEqual(sum('중요 변화' in x.args[2] for x in sender.call_args_list),2)
+   finally:os.chdir(cwd)
+
 if __name__=='__main__':unittest.main()
