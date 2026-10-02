@@ -155,6 +155,15 @@ class SmartTransitions(unittest.TestCase):
   self.assertFalse(condition_recovery(h,bars)[0][1]);h['tech']={'thesis':'valid'}
   self.assertFalse(condition_recovery(h,bars)[0][1]);bars[-1]={'date':'2026-09-02','close':110}
   self.assertTrue(condition_recovery(h,bars)[0][1])
+  self.assertIn('근거:',condition_recovery(h,bars)[0][2]);self.assertIn('다음:',condition_recovery(h,bars)[0][2])
+  self.assertIn('0~5단계와 별개',condition_recovery(h,bars)[0][2])
+ def test_recovery_plan_transition_explains_regression(self):
+  h=[dict(H[0],recovery={'tranches':[{'id':'t1','conditions':[{'type':'ma20'},{'type':'thesis'}]}]},tech={'thesis':'valid'})]
+  bars=[{'date':f'2026-08-{j+1:02d}','close':100,'high':101,'low':99,'volume':1000} for j in range(20)]
+  def feed(day,close):return {'updates':[dict(id='x',name='Fixture',acct='Test',mkt='KR',quoteAsOf='2026-09-21T15:30:00+09:00',quoteDate=day,bars=bars+[{'date':day,'close':close,'high':close+1,'low':close-1,'volume':1000}])]}
+  s,_=evaluate(h,feed('2026-09-18',99),{},NOW)
+  s,e=evaluate(h,feed('2026-09-19',110),s,NOW);self.assertTrue(any(x['kind']=='recovery:t1' and '20일선' in x['label'] and '다음:' in x['label'] for x in e))
+  _,e=evaluate(h,feed('2026-09-20',98),s,NOW);self.assertTrue(any(x['kind']=='recovery:t1' and not x['active'] and '대기' in x['label'] for x in e))
  def test_volume_and_average_are_state_transitions(self):
   h=[dict(H[0],buy=105)]
   b=[{'date':f'2026-08-{j+1:02d}','close':100,'high':101,'low':99,'volume':1000} for j in range(20)]

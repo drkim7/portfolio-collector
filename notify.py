@@ -59,7 +59,8 @@ def evaluate(holdings,patch,state,now,limits=None,fx=None,enabled_types=None):
             if old and old['date']>=c['date']:continue
             next_state['rules'][c['key']]={'date':c['date'],'active':c['active']}
             category='ma' if c['kind'].startswith('ma') else 'volume' if c['kind'].startswith('volume') else 'recovery' if c['kind'].startswith('recovery:') else 'avg' if 'recovery' in c['kind'] else 'level'
-            if old and c['active'] and not old['active'] and (enabled_types is None or category in enabled_types):
+            changed=old and c['active']!=old['active'] and (c['active'] or c['kind'].startswith('recovery:'))
+            if changed and (enabled_types is None or category in enabled_types):
                 events.append({**c,'itemId':h['id'],'text':f'{h["name"][:100]}\n{c["label"]}\n{c["date"]} 확정 종가 {b[-1]["close"]:,.2f} {"USD" if h.get("mkt")=="US" else "KRW"}'})
     # Concentration is comparable only when every held row has a fresh close.
     if isinstance(limits,dict) and positive(fx):
