@@ -34,20 +34,34 @@ def condition_recovery(h,bars):
         if not isinstance(t,dict) or t.get('recorded') or t.get('execution'):continue
         checks=t.get('conditions') or []
         if not checks:continue
-        states=[]
+        states=[];details=[];missing=[]
         for c in checks:
-            kind=c.get('type');result=None
+            if not isinstance(c,dict):states.append(None);missing.append('알 수 없는 조건');continue
+            kind=c.get('type');result=None;detail=None
             if kind in ('ma20','ma60'):
                 n=20 if kind=='ma20' else 60
-                if len(bars)>=n:result=close>sum(x['close'] for x in bars[-n:])/n
-            elif kind=='above-stop' and positive(h.get('stop') or h.get('stopAnchor')):result=close>(h.get('stop') or h.get('stopAnchor'))
-            elif kind=='low-hold' and len(bars)>=10:result=min(x['low'] for x in bars[-5:])>=min(x['low'] for x in bars[-10:-5])
+                if len(bars)>=n:
+                    ma=sum(x['close'] for x in bars[-n:])/n;result=close>ma;detail=f'{n}일선 {close:,.2f}/{ma:,.2f}'
+            elif kind=='above-stop' and positive(h.get('stop') or h.get('stopAnchor')):
+                line=h.get('stop') or h.get('stopAnchor');result=close>line;detail=f'이탈선 {close:,.2f}/{line:,.2f}'
+            elif kind=='low-hold' and len(bars)>=10:
+                recent=min(x['low'] for x in bars[-5:]);prior=min(x['low'] for x in bars[-10:-5]);result=recent>=prior;detail=f'최근 저점 {recent:,.2f}/{prior:,.2f}'
             elif kind=='volume' and len(bars)>=21:
                 window=[x.get('volume') for x in bars[-21:]]
-                if all(v is not None for v in window) and sum(window[:-1])>0:result=window[-1]/(sum(window[:-1])/20)>=c.get('threshold',1.5)
-            elif kind=='thesis' and isinstance(h.get('tech'),dict):result=h['tech'].get('thesis')=='valid' if h['tech'].get('thesis') in ('valid','broken','uncertain') else None
-            elif kind=='financing' and isinstance(h.get('tech'),dict):result=h['tech'].get('financing') in ('low','not_applicable') if h['tech'].get('financing') in ('low','high','not_applicable') else None
+                threshold=c.get('threshold',1.5)
+                if all(v is not None for v in window) and sum(window[:-1])>0 and positive(threshold):
+                    ratio=window[-1]/(sum(window[:-1])/20);result=ratio>=threshold;detail=f'거래량 {ratio:.2f}배/{threshold:.2f}배'
+            elif kind=='thesis' and isinstance(h.get('tech'),dict):
+                value=h['tech'].get('thesis');result=value=='valid' if value in ('valid','broken','uncertain') else None;detail='투자 논리 '+str(value or '미기록')
+            elif kind=='financing' and isinstance(h.get('tech'),dict):
+                value=h['tech'].get('financing');result=value in ('low','not_applicable') if value in ('low','high','not_applicable') else None;detail='자금조달 위험 '+str(value or '미기록')
             # App-only risk room, RSI and MACD conditions are unknown here: fail closed.
+            description=detail or {'ma20':'20일선','ma60':'60일선','above-stop':'이탈선','low-hold':'최근 저점','volume':'거래량','thesis':'투자 논리','financing':'자금조달 위험'}.get(kind,str(kind or '알 수 없는 조건'))+' 자료 부족/앱에서 확인'
             states.append(result)
-        out.append((str(t.get('id') or j+1),len(states)>0 and all(v is True for v in states),f'{j+1}차 복구 조건 {sum(v is True for v in states)}/{len(states)} 충족'))
+            if result is True:details.append(description)
+            else:missing.append(description)
+        active=len(states)>0 and all(v is True for v in states)
+        summary=f'복구계획 {j+1}차 조건 {sum(v is True for v in states)}/{len(states)} '+('확인' if active else '대기')
+        label=summary+' · 근거: '+(' / '.join(details[:3]) if details else '충족한 조건 없음')+' · 다음: '+('실제 실행·회수 계획 확인' if active else ' / '.join(missing[:3]))+' · 앱의 복구 코치 0~5단계와 별개'
+        out.append((str(t.get('id') or j+1),active,label))
     return out
