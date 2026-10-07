@@ -7,6 +7,7 @@ def positive(value):
     return isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value) and value>0
 
 def breakout_transition(bars, previous):
+    bars=technical_bars(bars)
     if len(bars)<253:return None,None
     last=bars[-1];date=last['date'];reference=max(x['high'] for x in bars[-253:-1]);close=last['close']
     if previous and previous.get('date','')>=date:return previous,None
@@ -25,6 +26,29 @@ def breakout_transition(bars, previous):
     detail=labels[state]+f' · 기준 {anchor:,.2f}'
     if ratio is not None:detail+=f' · 거래량 {ratio:.2f}배'+(' 확인' if ratio>=1.5 else ' 미동반')
     return nxt,{'state':state,'label':detail,'date':date,'reference':anchor,'volumeRatio':ratio}
+
+def technical_bars(bars):
+    if not bars or not all(b.get('adjustment')=='total-return' and positive(b.get('adjustedClose')) for b in bars):return bars
+    anchor=bars[-1]['close']/bars[-1]['adjustedClose']
+    return [dict(b,**{k:b.get(k,b['close'])*b['adjustedClose']/b['close']*anchor for k in ('open','high','low','close')}) for b in bars]
+
+def new_low_transition(bars,previous):
+    bars=technical_bars(bars)
+    if len(bars)<61:return None,None
+    last=bars[-1];day=last['date'];reference=min(x['low'] for x in bars[-253:-1]);close=last['close']
+    if previous and previous.get('date','')>=day:return previous,None
+    if previous is None:
+        state='new-low' if close<reference else 'normal'
+        return {'date':day,'state':state,'anchor':close if state=='new-low' else None},None
+    old=previous['state'];anchor=previous.get('anchor');state=old
+    if old in ('normal','reclaim'):state='new-low' if close<reference else 'normal'
+    elif positive(anchor) and close>anchor*1.01:state='reclaim'
+    elif positive(anchor) and close<anchor:state='extending'
+    if state in ('new-low','extending'):anchor=close
+    nxt={'date':day,'state':state,'anchor':anchor}
+    if state==old:return nxt,None
+    label=('52주 신저가' if len(bars)>=253 else f'상장 후 저점 ({len(bars)}일)')+' · '+state
+    return nxt,{'state':state,'date':day,'reference':reference,'label':label}
 
 def condition_recovery(h,bars):
     plan=h.get('recovery') or {};stages=plan.get('tranches') or []

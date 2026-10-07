@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "episodeVectors": [
+    {
+      "name": "active baseline produces zero events",
+      "steps": [
+        {
+          "date": "2026-09-01",
+          "active": true,
+          "rearm": false,
+          "fire": false,
+          "episode": 0,
+          "armed": false
+        }
+      ]
+    },
+    {
+      "name": "two buffered bars rearm and same bar is idempotent",
+      "steps": [
+        {
+          "date": "2026-09-01",
+          "active": false,
+          "rearm": true,
+          "fire": false,
+          "episode": 0,
+          "armed": true
+        },
+        {
+          "date": "2026-09-02",
+          "active": true,
+          "rearm": false,
+          "fire": true,
+          "episode": 0,
+          "armed": false
+        },
+        {
+          "date": "2026-09-02",
+          "active": true,
+          "rearm": false,
+          "fire": false,
+          "episode": 0,
+          "armed": false
+        },
+        {
+          "date": "2026-09-03",
+          "active": false,
+          "rearm": true,
+          "fire": false,
+          "episode": 0,
+          "armed": false
+        },
+        {
+          "date": "2026-09-04",
+          "active": false,
+          "rearm": false,
+          "fire": false,
+          "episode": 0,
+          "armed": false
+        },
+        {
+          "date": "2026-09-05",
+          "active": false,
+          "rearm": true,
+          "fire": false,
+          "episode": 0,
+          "armed": false
+        },
+        {
+          "date": "2026-09-08",
+          "active": false,
+          "rearm": true,
+          "fire": false,
+          "episode": 1,
+          "armed": true
+        },
+        {
+          "date": "2026-09-09",
+          "active": true,
+          "rearm": false,
+          "fire": true,
+          "episode": 1,
+          "armed": false
+        }
+      ]
+    }
+  ],
+  "marketVectors": [
+    {
+      "name": "volume excludes current",
+      "bars": [
+        {
+          "date": "2026-08-01",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-02",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-03",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-04",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-05",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-06",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-07",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-08",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-09",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-10",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-11",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-12",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-13",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-14",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-15",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-16",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-17",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-18",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-19",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-08-20",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 1000
+        },
+        {
+          "date": "2026-09-01",
+          "open": 100,
+          "high": 101,
+          "low": 99,
+          "close": 100,
+          "volume": 2000
+        }
+      ],
+      "expectedVolumeLabel": "거래량 직전 20일 평균 대비 2.00배",
+      "expectedVolumeActive": true
+    }
+  ],
+  "hashVectors": [
+    {
+      "holdings": [
+        {
+          "id": "synthetic",
+          "code": "TEST",
+          "acct": "모의",
+          "mkt": "US",
+          "qty": 0.125,
+          "buy": 123.45,
+          "tags": [
+            "검증"
+          ],
+          "stop": null,
+          "tech": {
+            "thesis": "valid"
+          },
+          "clusterIds": [
+            "synthetic-risk"
+          ]
+        }
+      ],
+      "expected": "fnv1a32:da0973ff"
+    }
+  ]
+}

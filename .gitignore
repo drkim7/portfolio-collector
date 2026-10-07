@@ -3,3 +3,6 @@ docs/
 __pycache__/
 *.json
 !holdings.example.json
+
+# Shared synthetic v28 contract only; actual portfolio JSON stays ignored.
+!fixtures/event-vectors.json

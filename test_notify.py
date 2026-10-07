@@ -13,7 +13,7 @@ class Alerts(unittest.TestCase):
   s,e=evaluate(H,patch(18,80),s,NOW);self.assertEqual(e,[])
   s,e=evaluate(H,patch(19,80),s,NOW);self.assertEqual(e,[])
   s,_=evaluate(H,patch(20,100),s,NOW)
-  _,e=evaluate(H,patch(21,80),s,NOW);self.assertEqual(len(e),1)
+  _,e=evaluate(H,patch(21,80),s,NOW);self.assertEqual(len(e),0)  # one buffered re-arm bar is insufficient
  def test_stale_and_account_mismatch(self):
   s,_=evaluate(H,patch(17,100),{},NOW)
   _,e=evaluate(H,patch(1,80),s,NOW);self.assertEqual(e,[])
@@ -67,11 +67,11 @@ class Health(unittest.TestCase):
   from notify import main,save
   from pipeline import decrypt,encrypt
   sender=Mock();cwd=os.getcwd();password='fixture-password'
-  env={'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture','REPORT_PASSWORD':password,'COLLECTION_OUTCOME':'failure','DEPLOY_OUTCOME':'skipped'}
+  env={'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture','REPORT_PASSWORD':password,'COLLECTION_OUTCOME':'failure','DEPLOY_OUTCOME':'skipped','V28_ALERT_MODE':'live'}
   with tempfile.TemporaryDirectory() as tmp:
    try:
     os.chdir(tmp)
-    original={'initialized':True,'rules':{'keep':{'date':'2026-09-18','active':False}},'sent':[]}
+    original={'schemaVersion':28,'initialized':True,'rules':{'keep':{'date':'2026-09-18','active':False,'armed':True,'episode':0,'rearmCounter':0,'lastTransitionBarDate':'2026-09-18'}},'sent':[]}
     save(Path('state/alerts.enc'),original,password)
     with mockpatch.dict('os.environ',env,clear=True), mockpatch('notify.time.sleep'), mockpatch('notify.load_holdings',return_value=(H,{},None)), mockpatch('notify.datetime') as clock:
      clock.now.return_value=NOW;clock.fromisoformat.side_effect=datetime.fromisoformat
@@ -100,7 +100,7 @@ class DigestQueue(unittest.TestCase):
   from notify import main,save
   from pipeline import encrypt,decrypt
   password='fixture-password';cwd=os.getcwd();sender=Mock()
-  env={'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture','REPORT_PASSWORD':password}
+  env={'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture','REPORT_PASSWORD':password,'V28_ALERT_MODE':'live'}
   def candles(day,price):
    p=patch(day,price);u=p['updates'][0];u['quoteDate']=f'2026-09-{day:02d}'
    u['bars']=[dict(date=f'2026-08-{j+1:02d}',close=100,high=101) for j in range(20)]+[u['bars'][-1]]
@@ -108,7 +108,7 @@ class DigestQueue(unittest.TestCase):
   with tempfile.TemporaryDirectory() as tmp:
    try:
     os.chdir(tmp);Path('site').mkdir()
-    baseline,_=evaluate(H,candles(20,99),{},datetime(2026,9,22,tzinfo=timezone.utc));baseline['initialized']=True
+    baseline,_=evaluate(H,candles(20,99),{},datetime(2026,9,22,tzinfo=timezone.utc));baseline['initialized']=True;baseline['schemaVersion']=28
     save(Path('state/alerts.enc'),baseline,password)
     def load():return json.loads(decrypt(json.loads(Path('state/alerts.enc').read_text()),password))
     with mockpatch.dict('os.environ',env,clear=True),mockpatch('notify.time.sleep'),mockpatch('notify.load_holdings',return_value=(H,{},None)),mockpatch('notify.datetime') as clock:
@@ -121,11 +121,11 @@ class DigestQueue(unittest.TestCase):
      self.assertEqual(sender.call_count,0);self.assertTrue(load()['pending'])
      sender.side_effect=RuntimeError('offline')
      with self.assertRaises(RuntimeError):run('2026-09-22T07:40:00+00:00',22,99)
-     self.assertEqual(len(load()['pending']),2)
+     self.assertEqual(len(load()['pending']),1)
      sender.side_effect=None;sender.reset_mock()
      run('2026-09-22T07:45:00+00:00',22,99)
      self.assertEqual(sender.call_count,1)
-     text=sender.call_args.args[2];self.assertIn('위로 전환',text);self.assertIn('아래로 전환',text)
+     text=sender.call_args.args[2];self.assertIn('위로 전환',text)
      self.assertEqual(load()['pending'],[])
      run('2026-09-22T08:00:00+00:00',22,99);self.assertEqual(sender.call_count,1)
      run('2026-09-23T01:40:00+00:00',22,101)
@@ -196,18 +196,18 @@ class SmartDelivery(unittest.TestCase):
   from pathlib import Path
   from unittest.mock import patch as mockpatch,Mock
   from notify import main,save
-  from pipeline import encrypt,decrypt
+  from pipeline import encrypt,decrypt,holdings_hash
   password='fixture-password';cwd=os.getcwd();sender=Mock()
   holdings=[dict(H[0],buy=105,target=105),dict(H[0],id='y',name='Other',buy=105,target=105)]
   bars=[dict(date=f'2026-08-{j+1:02d}',close=100,high=101,low=99,volume=1000) for j in range(20)]
   def data(date,close,volume):
-   return {'updates':[dict(id=h['id'],name=h['name'],acct=h['acct'],mkt=h['mkt'],price=close,quoteDate=date,quoteAsOf='2026-09-21T15:30:00+09:00',bars=bars+[dict(date=date,close=close,high=close+1,low=close-1,volume=volume)]) for h in holdings]}
-  initial,_=evaluate(holdings,data('2026-09-18',100,1000),{},NOW);initial['initialized']=True
+   return {'holdingsAsOf':'2026-09-21T00:00:00+00:00','holdingsHash':holdings_hash(holdings),'updates':[dict(id=h['id'],name=h['name'],acct=h['acct'],mkt=h['mkt'],price=close,quoteDate=date,quoteAsOf='2026-09-21T15:30:00+09:00',bars=bars+[dict(date=date,close=close,high=close+1,low=close-1,volume=volume)]) for h in holdings]}
+  initial,_=evaluate(holdings,data('2026-09-18',100,1000),{},NOW);initial['initialized']=True;initial['schemaVersion']=28
   with tempfile.TemporaryDirectory() as tmp:
    try:
     os.chdir(tmp);Path('site').mkdir();save(Path('state/alerts.enc'),initial,password)
     Path('site/quotes-patch.enc').write_text(json.dumps(encrypt(json.dumps(data('2026-09-21',106,2000)),password)))
-    env={'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture','REPORT_PASSWORD':password,'SMART_ALERT_DAILY_CAP':'1','SMART_ALERT_HEALTH':'0'}
+    env={'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture','REPORT_PASSWORD':password,'SMART_ALERT_DAILY_CAP':'1','SMART_ALERT_HEALTH':'0','V28_ALERT_MODE':'live','APP_HOLDINGS_HASH':holdings_hash(holdings)}
     with mockpatch.dict('os.environ',env,clear=True),mockpatch('notify.time.sleep'),mockpatch('notify.load_holdings',return_value=(holdings,{},None)),mockpatch('notify.datetime') as clock:
      clock.fromisoformat.side_effect=datetime.fromisoformat;clock.now.return_value=datetime(2026,9,21,7,40,tzinfo=timezone.utc)
      main(sender)

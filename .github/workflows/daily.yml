@@ -3,7 +3,7 @@ name: 보유 종목 점검
 on:
   push:
     branches: [main]
-    paths: [pipeline.py, test_pipeline.py, notify.py, smart_alerts.py, test_notify.py, .github/workflows/daily.yml]
+    paths: [pipeline.py, test_pipeline.py, notify.py, smart_alerts.py, test_notify.py, test_v28.py, fixtures/event-vectors.json, .github/workflows/daily.yml]
   schedule:
     # 월~금 16:40 KST (07:40 UTC): KRX 마감 후. 미국은 전날 종가.
     - cron: "40 7 * * 1-5"
@@ -43,7 +43,7 @@ jobs:
 
       - name: 자체 검증 (가짜 네트워크, 실패하면 여기서 멈춤)
         id: verify
-        run: python3 -m unittest test_pipeline test_notify
+        run: python3 -m unittest test_pipeline test_notify test_v28
 
       - name: 수집·계산·리포트
         id: collect
@@ -92,6 +92,8 @@ jobs:
           SMART_ALERT_DAILY_CAP: ${{ vars.SMART_ALERT_DAILY_CAP }}
           SMART_ALERT_TYPES: ${{ vars.SMART_ALERT_TYPES }}
           SMART_ALERT_HEALTH: ${{ vars.SMART_ALERT_HEALTH }}
+          V28_ALERT_MODE: ${{ vars.V28_ALERT_MODE }}
+          APP_HOLDINGS_HASH: ${{ vars.APP_HOLDINGS_HASH }}
         run: python3 notify.py
 
       - name: 암호화된 알림 상태 저장

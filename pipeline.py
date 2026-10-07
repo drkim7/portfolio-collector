@@ -297,7 +297,16 @@ def clean(bars, market, now=None, continuous=False):
         if vol is not None and not (isinstance(vol, (int, float)) and math.isfinite(vol) and vol >= 0): raise ValueError("거래량 값 이상 "+d)
         o, h, l, c = ohlc
         if min(o, h, l, c) <= 0 or h < max(o, l, c) or l > min(o, c): raise ValueError("고가·저가 불일치 "+d)
-        dates.add(d); out.append({"date": d, "open": o, "high": h, "low": l, "close": c, "volume": vol})
+        metadata={}
+        if b.get('adjustment') in ('raw','split-adjusted','total-return'):metadata['adjustment']=b['adjustment']
+        for key in ('adjustedClose','cashDistribution'):
+            if key in b:
+                if not isinstance(b[key],(int,float)) or not math.isfinite(b[key]) or b[key]<0 or key=='adjustedClose' and b[key]==0:raise ValueError('수정가격/분배금 형식 오류')
+                metadata[key]=b[key]
+        if 'distributionVerified' in b:
+            if not isinstance(b['distributionVerified'],bool):raise ValueError('분배금 확인 형식 오류')
+            metadata['distributionVerified']=b['distributionVerified']
+        dates.add(d); out.append({"date": d, "open": o, "high": h, "low": l, "close": c, "volume": vol, **metadata})
     out.sort(key=lambda b: b["date"])
     return out, empty
 
@@ -657,7 +666,21 @@ def patch_bars(rec, now):
     cutoff = local.date() if ready else local.date()-timedelta(days=1)
     return [b for b in rec["bars"] if b["date"] <= cutoff.isoformat() and date.fromisoformat(b["date"]).weekday() < 5]
 
-def build_patch(holdings, records, generated, now):
+def holdings_hash(holdings):
+    fields=('id','code','mkt','acct','qty','buy','tags','stop','stopAnchor','target','economicBep','plan','recovery','tech','clusterIds')
+    def canonical(value):
+        if isinstance(value,bool):return value
+        if isinstance(value,(int,float)):return int(math.floor(value*1e6+.5))
+        if isinstance(value,list):return [canonical(v) for v in value]
+        if isinstance(value,dict):return {k:canonical(v) for k,v in sorted(value.items()) if v is not None}
+        return value
+    rows=sorted(({k:i[k] for k in fields if i.get(k) is not None} for i in holdings if (i.get('qty') or 0)>0),key=lambda x:str(x.get('id','')))
+    h=2166136261
+    for b in json.dumps(canonical(rows),ensure_ascii=False,separators=(',',':')).encode('utf-8'):
+        h=((h^b)*16777619)&0xffffffff
+    return 'fnv1a32:'+format(h,'08x')
+
+def build_patch(holdings, records, generated, now, snapshot=None):
     by_key = {r["key"]: r for r in records}
     ups, fails = [], []
     for it in holdings:
@@ -673,7 +696,7 @@ def build_patch(holdings, records, generated, now):
                     "assetClass": r.get("assetClass", "equity"), "acct": it.get("acct"), "price": last["close"], "quoteDate": last["date"], "quoteAsOf": close_stamp(last["date"], it["mkt"], r.get("assetClass")),
                     "quoteTimePrecision": "day", "quoteSource": r["source"]+" completed daily bar", "collectedAt": generated,
                     "bars": bars})
-    return {"kind": "portfolio-quotes-v1", "collectedAt": generated, "barRule": "exchange assets use completed trading days; crypto uses all completed UTC days including weekends; 252 crypto bars mean 252 calendar days, not 52 weeks",
+    return {"kind": "portfolio-quotes-v1", "collectedAt": generated, "holdingsAsOf":(snapshot or {}).get('holdingsAsOf'), "holdingsHash":holdings_hash(holdings), "barRule": "exchange assets use completed trading days; crypto uses all completed UTC days including weekends; 252 crypto bars mean 252 calendar days, not 52 weeks",
             "updates": ups, "failures": fails}
 
 # ============================================================
@@ -783,7 +806,10 @@ def main(site_dir="site", state_dir="state", now=None):
                                 "aboveHigh": bool(d["high252ExclToday"] and d["close"] > d["high252ExclToday"]),
                                 "dd": (d["close"]/d["high52w"]-1)*100 if d["high52w"] else None}
     state = {"meta": meta, "securities": state_secs}
-    patch = json.dumps(build_patch(holdings, records, generated, now), ensure_ascii=False)
+    raw_source=os.environ.get('HOLDINGS_JSON','').strip()
+    snapshot=json.loads(raw_source) if raw_source else {}
+    if not isinstance(snapshot,dict):snapshot={}
+    patch = json.dumps(build_patch(holdings, records, generated, now, snapshot), ensure_ascii=False)
 
     def put(path, text):
         with open(path, "w", encoding="utf-8") as f: f.write(text)
@@ -796,4 +822,3 @@ def main(site_dir="site", state_dir="state", now=None):
 
 if __name__ == "__main__":
     main()
-
