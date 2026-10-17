@@ -3,7 +3,7 @@ name: 보유 종목 점검
 on:
   push:
     branches: [main]
-    paths: [pipeline.py, test_pipeline.py, notify.py, smart_alerts.py, test_notify.py, test_v28.py, fixtures/event-vectors.json, .github/workflows/daily.yml]
+    paths: [dart_financials.py, test_dart_financials.py, pipeline.py, test_pipeline.py, notify.py, smart_alerts.py, test_notify.py, test_v28.py, fixtures/event-vectors.json, .github/workflows/daily.yml]
   schedule:
     # 월~금 16:40 KST (07:40 UTC): KRX 마감 후. 미국은 전날 종가.
     - cron: "40 7 * * 1-5"
@@ -43,7 +43,7 @@ jobs:
 
       - name: 자체 검증 (가짜 네트워크, 실패하면 여기서 멈춤)
         id: verify
-        run: python3 -m unittest test_pipeline test_notify test_v28
+        run: python3 -m unittest test_pipeline test_notify test_v28 test_dart_financials
 
       - name: 수집·계산·리포트
         id: collect
@@ -54,13 +54,27 @@ jobs:
           TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }} # 미국 시세용
           USDKRW: ${{ vars.USDKRW }}                       # 선택. 비우면 보유내역의 usdkrw 또는 1380
         run: python3 pipeline.py
-        # 전 종목 실패 → 종료 코드 1 → 아래 단계 실행 안 됨 → 이전 페이지·이전 상태 유지
+        # 시세 실패 시에도 별도의 분기 수집 결과가 있으면 그 암호화 결과는 게시할 수 있습니다.
 
-      - name: 비교용 상태 저장 (암호화된 state/state.enc 만 커밋. 리포트는 커밋하지 않음)
+      - name: 공식 DART 분기·반기 수집 (실패해도 정상 시세 유지)
+        id: dart
+        if: ${{ always() && steps.verify.outcome == 'success' && (steps.collect.outcome == 'success' || steps.collect.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          HOLDINGS_JSON: ${{ secrets.HOLDINGS_JSON }}
+          REPORT_PASSWORD: ${{ secrets.REPORT_PASSWORD }}
+          OPENDART_API_KEY: ${{ secrets.OPENDART_API_KEY }}
+          DART_RESEARCH_CODES: ${{ vars.DART_RESEARCH_CODES }}
+        run: python3 dart_financials.py
+
+      - name: 비교용 상태 저장 (암호화 파일만 커밋)
+        if: ${{ always() && steps.verify.outcome == 'success' && (steps.collect.outcome == 'success' || (steps.dart.outcome == 'success' && steps.dart.outputs.available == 'true')) }}
         run: |
           git config user.name "portfolio-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add state/state.enc
+          for file in state/state.enc state/research-financials.enc; do
+            if [ -f "$file" ]; then git add "$file"; fi
+          done
           if git diff --cached --quiet; then echo "상태 변경 없음"; exit 0; fi
           git commit -m "state $(date -u +%Y-%m-%dT%H:%M)"
           git pull --rebase --quiet
@@ -69,12 +83,15 @@ jobs:
       # GITHUB_TOKEN 으로 푸시한 커밋은 Pages 빌드를 시작하지 않는다.
       # 그래서 커밋에 기대지 않고 Pages 배포 작업을 직접 실행한다. (Settings → Pages → Source: GitHub Actions)
       - uses: actions/configure-pages@v5
+        if: ${{ always() && steps.verify.outcome == 'success' && (steps.collect.outcome == 'success' || (steps.dart.outcome == 'success' && steps.dart.outputs.available == 'true')) }}
 
       - uses: actions/upload-pages-artifact@v3
+        if: ${{ always() && steps.verify.outcome == 'success' && (steps.collect.outcome == 'success' || (steps.dart.outcome == 'success' && steps.dart.outputs.available == 'true')) }}
         with:
           path: site
 
       - id: deploy
+        if: ${{ always() && steps.verify.outcome == 'success' && (steps.collect.outcome == 'success' || (steps.dart.outcome == 'success' && steps.dart.outputs.available == 'true')) }}
         uses: actions/deploy-pages@v4
 
 

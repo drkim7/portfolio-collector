@@ -54,3 +54,20 @@ portfolio-quotes.gs는 기술분석용 일봉 수집기와 별도다. 장중에�
 
 ### 국내 장중 spot 개선 (2026-09-22)
 국내 .KS/.KQ 종목의 장중 spot은 네이버 금융 공개 polling JSON을 우선 사용하고, 실패 시 Yahoo로 fallback합니다. 네이버 응답의 closePrice/localTradedAt를 사용하며 장중 30분 이상 오래된 값은 앱 feed에 전달하지 않습니다. 이 경로는 공개 웹 데이터에 의존하므로 영구 API SLA가 없고 형식 변경 시 실패할 수 있습니다. `diagnoseQuoteSetup()`으로 Google Sheet 권한과 첫 티커 시세를 한 번에 점검할 수 있습니다.
+
+## 분기·반기 실적 (GitHub → 투자 데스크)
+
+Cloudflare에서 DART 직접 연결이 실패하는 환경을 위해 GitHub Actions가 공식 DART를 조회하고, 기존 `quotes-patch.enc`에 실적 원행을 함께 암호화합니다. 별도 제3자 중계에 DART 키를 전달하지 않습니다. 리포트 비밀번호는 기존 `REPORT_PASSWORD`를 그대로 씁니다.
+
+1. 저장소 Settings → Secrets and variables → Actions에 `OPENDART_API_KEY` Secret을 추가하고 발급받은 40자리 DART 키를 넣습니다. 앱에 저장한 키는 GitHub로 자동 복사되지 않습니다. https://github.com/drkim7/portfolio-collector/settings/secrets/actions
+2. Actions → ‘보유 종목 점검’ → Run workflow를 실행합니다. 이후 기존 예약에서도 수집합니다.
+3. 앱을 새로고침하고 상단 ‘시세·실적 수집 결과 연결’에 기존 Pages 주소와 REPORT_PASSWORD를 입력합니다. 새 시세가 없어도 실적을 반영합니다.
+4. 작업실 → 실적 분석실에서 확인합니다. ‘GitHub 실적 불러오기’는 마지막 게시 결과를 읽으며 Actions를 새로 실행하지 않습니다.
+
+대상은 최대 5개의 보유 국내 개별주입니다. `DART_RESEARCH_CODES` Actions Variable에 쉼표로 종목코드를 지정할 수 있습니다. 비워 두면 HOLDINGS_JSON의 `researchCodes`/`researchWorkroom.codes`를 쓰고, 둘 다 없으면 앱의 초기 선호 순서(HD현대마린엔진·한국카본·오가노이드사이언스·삼성SDI·SK하이닉스 중 보유 종목, 이후 다른 국내 개별주)로 5개를 선택합니다. 앱 작업실 대상을 바꿨다면 새 수집기 JSON으로 HOLDINGS_JSON을 갱신하거나 Variable도 맞춰 주세요.
+
+12월 결산 비금융업을 대상으로 최근 4개 보고서 후보를 확인합니다. 숫자는 표준 계정 원행만 전달하며 비교 계산은 앱에서 합니다. CFS 자료 없음(013)에서만 OFS를 시도하고, 010/011/012/020/901이면 후속 호출을 멈춥니다. 정상 응답/자료 없음은 같은 KST 날짜에 다시 호출하지 않습니다. 따라서 당일 뒤늦게 들어온 보고서·정정은 다음 날 반영될 수 있습니다. 일일 재조회는 보고서 정정을 확인하기 위한 것이며 공시 목록 전체 수집은 아닙니다.
+
+실적 실패는 정상 시세 게시를 막지 않습니다. 시세가 전부 실패해도 정상 실적 저장본이 있으면 시세 갱신 없이 실적 결과만 게시합니다. 실적 비교 상태는 `state/research-financials.enc`에만 암호화해 보존합니다. 키 미설정도 암호화 결과에 명시합니다. 앱은 현재 작업실 대상과 회사·보고서·통화·수집 시각을 확인한 뒤 사용자별 실적 테이블에 저장합니다. 수량·평단·메모·투자논리는 바꾸지 않습니다.
+
+검증: `python3 -m unittest test_dart_financials test_pipeline test_notify test_v28`. 실제 GitHub 실행의 DART 통신 성공 여부는 키 설정 후 확인해야 합니다. 원천 응답을 못 받은 경우 숫자를 만들거나 시험 데이터를 게시하지 않습니다.
