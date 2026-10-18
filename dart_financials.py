@@ -5,6 +5,8 @@ from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 import pipeline as P
 
+MAX_RESEARCH_CODES = 10
+
 REPORTS = [('Q1','11013',3,31),('H1','11012',6,30),('Q3','11014',9,30),('FY','11011',12,31)]
 DICTIONARY = json.loads((Path(__file__).parent/'financial-accounts.json').read_text())
 IDS = {v for a in DICTIONARY['accounts'].values() for v in a['ids']}
@@ -53,8 +55,8 @@ def target_manifest(obj,override=''):
     def excluded(h):return h.get('isETF') or re.search(r'ETF|ETN|KODEX|TIGER|KOACT|ACE |RISE |PLUS |SOL |HANARO|TIMEFOLIO',h.get('name',''),re.I)
     eligible=list(dict.fromkeys(h['code'] for h in active if not excluded(h)))
     explicit=override.split(',') if override.strip() else obj.get('researchCodes',obj.get('researchWorkroom',{}).get('codes')) if isinstance(obj,dict) else None
-    if explicit is not None and (not isinstance(explicit,list) or len(explicit)>5):raise DartError('target-settings')
-    requested=list(dict.fromkeys(str(c).strip()[:100] for c in (explicit if explicit is not None else eligible[:5])))
+    if explicit is not None and (not isinstance(explicit,list) or len(explicit)>MAX_RESEARCH_CODES):raise DartError('target-settings')
+    requested=list(dict.fromkeys(str(c).strip()[:100] for c in (explicit if explicit is not None else eligible[:MAX_RESEARCH_CODES])))
     selected=[];dropped=[]
     for code in requested:
         reason='invalid-code' if not re.fullmatch(r'[0-9A-Z]{6}',code) else 'excluded-etf' if any(h['code']==code and excluded(h) for h in active) and code not in eligible else 'not-in-holdings-snapshot' if code not in eligible else None

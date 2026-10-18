@@ -45,6 +45,29 @@ class Collection(unittest.TestCase):
         self.assertEqual(b['companies'][0]['reports'],a['companies'][0]['reports'])
         self.assertEqual(b['companies'][0]['reason'],'http-302')
         with self.assertRaises(D.DartError):D.compact_response({'list':[{'corp_code':'wrong'}]},'00164779','2026','11012','CFS')
+    def test_ten_target_limit_keeps_every_selected_company(self):
+        codes=[str(100000+i) for i in range(10)]
+        obj={'holdings':[dict(OBJ['holdings'][0],id='h'+str(i),code=code,name='test') for i,code in enumerate(codes)]}
+        self.assertEqual(D.targets(obj,','.join(codes)),codes)
+        self.assertEqual(D.targets(obj),codes)
+        base,_=fake()
+        def many(endpoint,key,args,limit=None):
+            if endpoint=='corpCode.xml':
+                xml='<result>'+''.join('<list><stock_code>'+c+'</stock_code><corp_code>'+str(10000000+i)+'</corp_code></list>' for i,c in enumerate(codes))+'</result>'
+                buf=io.BytesIO()
+                with zipfile.ZipFile(buf,'w') as z:z.writestr('CORPCODE.xml',xml)
+                return buf.getvalue()
+            if endpoint=='company.json':
+                c=codes[int(args['corp_code'])-10000000]
+                return json.dumps({'status':'000','corp_code':args['corp_code'],'stock_code':c,'corp_name':'test','acc_mt':'12','induty_code':'2612'}).encode()
+            return base(endpoint,key,args,limit)
+        for count in (9,10):
+            chosen=codes[:count]
+            a=D.collect(obj,KEY,now=NOW,override=','.join(chosen),fetch=many)
+            self.assertEqual([c['code'] for c in a['companies']],chosen)
+            self.assertTrue(all(len(c['reports'])==4 for c in a['companies']))
+        with self.assertRaises(D.DartError) as e:D.targets(obj,','.join(codes+['199999']))
+        self.assertEqual(e.exception.code,'target-settings')
     def test_targets_keep_app_preference_and_exclude_etfs_and_sold_holdings(self):
         obj={'holdings':OBJ['holdings']+[dict(OBJ['holdings'][0],id='e',code='123456',isETF=True),dict(OBJ['holdings'][0],id='z',code='654321',qty=0)]}
         self.assertEqual(D.targets(obj),['000660']);self.assertEqual(D.targets(obj,'000660'),['000660'])

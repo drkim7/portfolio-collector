@@ -64,7 +64,7 @@ Cloudflare에서 DART 직접 연결이 실패하는 환경을 위해 GitHub Acti
 3. 앱을 새로고침하고 상단 ‘시세·실적 수집 결과 연결’에 기존 Pages 주소와 REPORT_PASSWORD를 입력합니다. 새 시세가 없어도 실적을 반영합니다.
 4. 작업실 → 실적 분석실에서 확인합니다. ‘GitHub 실적 불러오기’는 마지막 게시 결과를 읽으며 Actions를 새로 실행하지 않습니다.
 
-대상은 최대 5개의 보유 국내 개별주입니다. `DART_RESEARCH_CODES` Actions Variable에 쉼표로 종목코드를 지정할 수 있습니다. 비워 두면 HOLDINGS_JSON의 `researchCodes`/`researchWorkroom.codes`를 쓰고, 둘 다 없으면 앱의 초기 선호 순서(HD현대마린엔진·한국카본·오가노이드사이언스·삼성SDI·SK하이닉스 중 보유 종목, 이후 다른 국내 개별주)로 5개를 선택합니다. 앱 작업실 대상을 바꿨다면 새 수집기 JSON으로 HOLDINGS_JSON을 갱신하거나 Variable도 맞춰 주세요.
+대상은 최대 10개의 보유 국내 개별주입니다. `DART_RESEARCH_CODES` Actions Variable에 쉼표로 종목코드를 지정할 수 있습니다. 비워 두면 HOLDINGS_JSON의 `researchCodes`/`researchWorkroom.codes`를 쓰고, 둘 다 없으면 앱의 보유 스냅샷의 적격 국내 개별주 순서로 10개를 선택합니다. 앱 작업실 대상을 바꿨다면 새 수집기 JSON으로 HOLDINGS_JSON을 갱신하거나 Variable도 맞춰 주세요.
 
 12월 결산 비금융업을 대상으로 최근 4개 보고서 후보를 확인합니다. 숫자는 표준 계정 원행만 전달하며 비교 계산은 앱에서 합니다. CFS 자료 없음(013)에서만 OFS를 시도하고, 010/011/012/020/901이면 후속 호출을 멈춥니다. 정상 응답/자료 없음은 같은 KST 날짜에 다시 호출하지 않습니다. 따라서 당일 뒤늦게 들어온 보고서·정정은 다음 날 반영될 수 있습니다. 일일 재조회는 보고서 정정을 확인하기 위한 것이며 공시 목록 전체 수집은 아닙니다.
 
@@ -77,7 +77,7 @@ Cloudflare에서 DART 직접 연결이 실패하는 환경을 위해 GitHub Acti
 
 - 종목별 최근 120일 정기공시 목록을 실행마다 확인해 새 보고서와 정정을 감지합니다. 이 목록은 기간 전체 수집을 보증하는 용도가 아닙니다.
 - 새 접수번호·미수집 기간은 즉시 재무 API로 확인하고, 기존 4개 기간 전체 재조회는 7일마다 수행합니다. 공시는 있으나 API가 아직 013이면 `pending-api`로 남겨 같은 날 다음 실행에서도 재시도합니다.
-- `DART_RESEARCH_CODES` 또는 HOLDINGS_JSON의 researchCodes로 최대 5개를 지정합니다. 미지정 시 스냅샷의 적격 국내 개별주 순서로 선택합니다. 코드 형식 오류·ETF·스냅샷에 없는 코드는 암호화된 targets.dropped에 이유를 남깁니다.
+- `DART_RESEARCH_CODES` 또는 HOLDINGS_JSON의 researchCodes로 최대 10개를 지정합니다. 미지정 시 스냅샷의 적격 국내 개별주 순서로 선택합니다. 코드 형식 오류·ETF·스냅샷에 없는 코드는 암호화된 targets.dropped에 이유를 남깁니다.
 - targets.holdingsHash를 앱과 대조합니다. 보유내역이 바뀌면 HOLDINGS_JSON과 기존 APP_HOLDINGS_HASH를 함께 갱신하세요. 종목코드의 고정 선호 목록은 제거했습니다. 기존 Git 이력은 변경하지 않았습니다.
 - financial-accounts.json은 앱의 data/financial-accounts.json에서 생성한 사전입니다. 앱 체크아웃에서 `node scripts/sync-financial-dictionary.mjs`로 갱신하고 두 저장소를 함께 배포합니다. Python/TS별 ID·명칭 목록을 별도로 편집하지 않습니다.
 - 앱이 새 optional 필드를 수용하도록 먼저 배포한 뒤 수집기를 갱신해야 합니다.
