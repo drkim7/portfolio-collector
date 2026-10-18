@@ -71,3 +71,14 @@ Cloudflare에서 DART 직접 연결이 실패하는 환경을 위해 GitHub Acti
 실적 실패는 정상 시세 게시를 막지 않습니다. 시세가 전부 실패해도 정상 실적 저장본이 있으면 시세 갱신 없이 실적 결과만 게시합니다. 실적 비교 상태는 `state/research-financials.enc`에만 암호화해 보존합니다. 키 미설정도 암호화 결과에 명시합니다. 앱은 현재 작업실 대상과 회사·보고서·통화·수집 시각을 확인한 뒤 사용자별 실적 테이블에 저장합니다. 수량·평단·메모·투자논리는 바꾸지 않습니다.
 
 검증: `python3 -m unittest test_dart_financials test_pipeline test_notify test_v28`. 실제 GitHub 실행의 DART 통신 성공 여부는 키 설정 후 확인해야 합니다. 원천 응답을 못 받은 경우 숫자를 만들거나 시험 데이터를 게시하지 않습니다.
+
+
+### 판단 엔진 1단계와 분기 수집(2026-10-18)
+
+- 종목별 최근 120일 정기공시 목록을 실행마다 확인해 새 보고서와 정정을 감지합니다. 이 목록은 기간 전체 수집을 보증하는 용도가 아닙니다.
+- 새 접수번호·미수집 기간은 즉시 재무 API로 확인하고, 기존 4개 기간 전체 재조회는 7일마다 수행합니다. 공시는 있으나 API가 아직 013이면 `pending-api`로 남겨 같은 날 다음 실행에서도 재시도합니다.
+- `DART_RESEARCH_CODES` 또는 HOLDINGS_JSON의 researchCodes로 최대 5개를 지정합니다. 미지정 시 스냅샷의 적격 국내 개별주 순서로 선택합니다. 코드 형식 오류·ETF·스냅샷에 없는 코드는 암호화된 targets.dropped에 이유를 남깁니다.
+- targets.holdingsHash를 앱과 대조합니다. 보유내역이 바뀌면 HOLDINGS_JSON과 기존 APP_HOLDINGS_HASH를 함께 갱신하세요. 종목코드의 고정 선호 목록은 제거했습니다. 기존 Git 이력은 변경하지 않았습니다.
+- financial-accounts.json은 앱의 data/financial-accounts.json에서 생성한 사전입니다. 앱 체크아웃에서 `node scripts/sync-financial-dictionary.mjs`로 갱신하고 두 저장소를 함께 배포합니다. Python/TS별 ID·명칭 목록을 별도로 편집하지 않습니다.
+- 앱이 새 optional 필드를 수용하도록 먼저 배포한 뒤 수집기를 갱신해야 합니다.
+- 리포트 암호화 방식은 기존 AES-GCM / PBKDF2-SHA256 310,000회입니다. 현재 비밀번호를 출력하거나 변경하지 않습니다. 실제 비밀번호 강도는 이 구현에서 확인할 수 없습니다.

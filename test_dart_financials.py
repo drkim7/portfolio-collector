@@ -1,5 +1,5 @@
 import contextlib, io, json, os, tempfile, unittest, zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest.mock import patch
 import dart_financials as D
@@ -16,6 +16,7 @@ def fake(status=None):
             b=io.BytesIO()
             with zipfile.ZipFile(b,'w') as z:z.writestr('CORPCODE.xml','<result><list><corp_code>00164779</corp_code><stock_code>000660</stock_code></list></result>')
             return b.getvalue()
+        if endpoint=='list.json':return b'{"status":"013"}'
         if endpoint=='company.json':return json.dumps({'status':'000','corp_code':'00164779','stock_code':'000660','corp_name':'test','acc_mt':'12','induty_code':'2612'}).encode()
         rows=[{'corp_code':args['corp_code'],'bsns_year':args['bsns_year'],'reprt_code':args['reprt_code'],'rcept_no':'20260814000001','sj_div':'CIS','account_id':'ifrs-full_Revenue','account_nm':'매출액','currency':'KRW','thstrm_amount':'123','thstrm_add_amount':'234','frmtrm_q_amount':'100'}]
         return json.dumps({'status':'000','list':rows}).encode()
@@ -24,9 +25,9 @@ class Collection(unittest.TestCase):
     def test_official_backfill_daily_cache_and_encrypted_compatible_packet(self):
         f,calls=fake();a=D.collect(OBJ,KEY,now=NOW,fetch=f)
         self.assertEqual(len(a['companies'][0]['reports']),4)
-        self.assertEqual(len(calls),6)
+        self.assertEqual(len(calls),7)
         b=D.collect(OBJ,KEY,a,now=NOW,fetch=f)
-        self.assertEqual(len(calls),6)
+        self.assertEqual(len(calls),8)
         self.assertEqual(b['companies'][0]['reports'],a['companies'][0]['reports'])
         self.assertNotIn(KEY,json.dumps(a));self.assertEqual(json.loads(P.decrypt(P.encrypt(json.dumps(a),'test-1234'),'test-1234')),a)
     def test_key_missing_is_visible_and_keeps_previous_reports(self):
@@ -47,7 +48,7 @@ class Collection(unittest.TestCase):
     def test_targets_keep_app_preference_and_exclude_etfs_and_sold_holdings(self):
         obj={'holdings':OBJ['holdings']+[dict(OBJ['holdings'][0],id='e',code='123456',isETF=True),dict(OBJ['holdings'][0],id='z',code='654321',qty=0)]}
         self.assertEqual(D.targets(obj),['000660']);self.assertEqual(D.targets(obj,'000660'),['000660'])
-        with self.assertRaises(D.DartError):D.targets(obj,'not-a-code')
+        self.assertEqual(D.target_manifest(obj,'not-a-code')['dropped'],[{'code':'not-a-code','reason':'invalid-code'}])
         self.assertEqual(D.periods(NOW.date())[0],('2026','11012'))
     def test_cfs_no_data_falls_back_only_on_013(self):
         f,calls=fake()
@@ -66,6 +67,51 @@ class Collection(unittest.TestCase):
             old=(state/'research-financials.enc').read_text()
             with patch.object(D,'collect',return_value={**packet,'status':'setup-required','reason':'OPENDART_API_KEY-missing'}),contextlib.redirect_stdout(io.StringIO()):D.main(site,state)
             self.assertEqual((state/'research-financials.enc').read_text(),old)
+    def test_target_manifest_keeps_missing_invalid_and_etf_reasons(self):
+        obj={'holdings':OBJ['holdings']+[dict(OBJ['holdings'][0],id='etf',code='123456',isETF=True)]}
+        m=D.target_manifest(obj,'005930,123456,invalid')
+        self.assertEqual(m['collected'],[])
+        self.assertEqual([d['reason'] for d in m['dropped']],['not-in-holdings-snapshot','excluded-etf','invalid-code'])
+        self.assertEqual(m['holdingsHash'],P.holdings_hash(P.parse_holdings(obj)[0]))
+    def test_early_filing_collects_before_date_estimate_and_weekly_sweep_limits_calls(self):
+        base,calls=fake()
+        def early(endpoint,key,args,limit=None):
+            if endpoint=='list.json':
+                calls.append((endpoint,dict(args)))
+                return json.dumps({'status':'000','list':[{'report_nm':'[기재정정]분기보고서 (2026.09)','rcept_no':'20261015000001','rcept_dt':'20261015'}]}).encode()
+            raw=base(endpoint,key,args,limit)
+            if endpoint=='fnlttSinglAcntAll.json' and args['bsns_year']=='2026' and args['reprt_code']=='11014':
+                d=json.loads(raw)
+                for r in d['list']:r['rcept_no']='20261015000001'
+                return json.dumps(d).encode()
+            return raw
+        a=D.collect(OBJ,KEY,now=NOW,fetch=early)
+        self.assertIn(('2026','11014'),[(r['meta']['bsnsYear'],r['meta']['reprtCode']) for r in a['companies'][0]['reports']])
+        calls.clear();b=D.collect(OBJ,KEY,a,now=NOW+timedelta(days=1),fetch=early)
+        self.assertEqual(len([e for e,args in calls if e=='fnlttSinglAcntAll.json']),0)
+        self.assertEqual(len([e for e,args in calls if e=='list.json']),1)
+        calls.clear();D.collect(OBJ,KEY,b,now=NOW+timedelta(days=7),fetch=early)
+        self.assertEqual(len([e for e,args in calls if e=='fnlttSinglAcntAll.json']),4)
+    def test_pending_api_retries_same_day_without_refetching_cached_other_periods(self):
+        base,calls=fake()
+        def pending(endpoint,key,args,limit=None):
+            if endpoint=='list.json':return json.dumps({'status':'000','list':[{'report_nm':'분기보고서 (2026.09)','rcept_no':'20261015000001','rcept_dt':'20261015'}]}).encode()
+            if endpoint=='fnlttSinglAcntAll.json' and args['reprt_code']=='11014' and args['bsns_year']=='2026':
+                calls.append((endpoint,dict(args)));return b'{"status":"013"}'
+            return base(endpoint,key,args,limit)
+        a=D.collect(OBJ,KEY,now=NOW,fetch=pending)
+        self.assertIn('pending-api',[x['status'] for x in a['companies'][0]['attempts']])
+        calls.clear();D.collect(OBJ,KEY,a,now=NOW,fetch=pending)
+        fin=[args for e,args in calls if e=='fnlttSinglAcntAll.json']
+        self.assertEqual(len(fin),2);self.assertTrue(all(a['reprt_code']=='11014' for a in fin))
+    def test_one_period_failure_continues_other_reports(self):
+        base,_=fake()
+        def broken(endpoint,key,args,limit=None):
+            if endpoint=='fnlttSinglAcntAll.json' and args['reprt_code']=='11012':raise D.DartError('response-format')
+            return base(endpoint,key,args,limit)
+        a=D.collect(OBJ,KEY,now=NOW,fetch=broken)
+        self.assertEqual(a['companies'][0]['status'],'partial');self.assertEqual(len(a['companies'][0]['reports']),3)
+
     def test_http_redirect_is_never_followed(self):
         self.assertIsNone(D.NoRedirect().redirect_request(None,None,302,None,None,None))
 
