@@ -221,6 +221,35 @@ def cluster_events(events,clusters,holdings,trusted):
             result.append({'key':identity,'kind':kind,'itemId':'cluster:'+c['id'],'date':date,'active':True,'urgent':any(e['urgent'] for _,e in members),'label':f'{label} · {len(members)}종목 ({compact})','text':f'{c.get("name","위험 묶음")} 묶음\n{label}\n{compact}\n{date} 확정 일봉'})
     return result+[e for j,e in enumerate(events) if j not in taken]
 
+def financial_notice_step(state, patch, baseline=False):
+    """Receipt-only encrypted cursor/outbox; no amounts, names or app conditions."""
+    financials=patch.get('financials')
+    if not isinstance(financials,dict) or financials.get('status')=='setup-required':return state,None
+    receipts={}
+    for company in financials.get('companies',[]):
+        if not isinstance(company,dict):continue
+        code=company.get('code')
+        if not isinstance(code,str) or not __import__('re').fullmatch(r'[0-9A-Z]{6}',code):continue
+        for report in company.get('reports',[]):
+            meta=report.get('meta',{});rows=report.get('response',{}).get('list',[])
+            if meta.get('code')!=code or not rows:continue
+            receipt=rows[0].get('rcept_no','')
+            if not isinstance(receipt,str) or not __import__('re').fullmatch(r'\d{14}',receipt):continue
+            identity=json.dumps([code,meta.get('bsnsYear'),meta.get('reprtCode'),receipt],separators=(',',':'))
+            receipts[hashlib.sha256(identity.encode()).hexdigest()]=code
+    next_state=copy.deepcopy(state)
+    if baseline or not isinstance(state.get('financialSeen'),list):
+        next_state['financialSeen']=sorted(receipts);next_state['financialPending']=[]
+        return next_state,None
+    seen=set(state['financialSeen']);pending={r['id']:r for r in state.get('financialPending',[]) if isinstance(r,dict) and isinstance(r.get('id'),str) and isinstance(r.get('code'),str)}
+    for identity,code in receipts.items():
+        if identity not in seen:pending[identity]={'id':identity,'code':code}
+    # Keep cursors only for bounded recent report identities; pending is separate.
+    next_state['financialSeen']=sorted(seen|set(receipts))[-2000:]
+    next_state['financialPending']=list(pending.values())[-200:]
+    count=len({r['code'] for r in next_state['financialPending']})
+    return next_state,('분기·반기 실적 새로 수집: '+str(count)+'종목 · 앱에서 조건 결과를 확인하세요') if count else None
+
 def main(sender=send):
     token=os.getenv('TELEGRAM_BOT_TOKEN','').strip();chat=os.getenv('TELEGRAM_CHAT_ID','').strip()
     if not token or not chat:print('Telegram not configured; report remains available.');return
@@ -237,6 +266,19 @@ def main(sender=send):
     if baseline:state={'schemaVersion':ALERT_SCHEMA,'rules':{},'breakout':{},'sent':[],'pending':[]}
     outcome=os.getenv('COLLECTION_OUTCOME','success')
     deployed=os.getenv('DEPLOY_OUTCOME','success')
+    published_patch=None
+    # Financial publication can succeed even if quote collection failed.
+    if deployed=='success' and Path('site/quotes-patch.enc').exists():
+        published_patch=json.loads(decrypt(json.loads(Path('site/quotes-patch.enc').read_text()),password))
+        before=state
+        state,notice=financial_notice_step(state,published_patch,baseline)
+        if mode=='off':state['financialPending']=[]
+        if state!=before:save(path,state,password)
+        if notice and mode!='off':
+            # Persist before delivery. A failed send is retried by the next run.
+            save(path,state,password)
+            sender(token,chat,notice+'\n'+DESK)
+            state['financialPending']=[];save(path,state,password)
     if outcome!='success' or deployed!='success':
         health='collection_failed' if outcome!='success' else 'publish_failed'
         message=health_message(state.get('health'),health,'')
@@ -244,7 +286,7 @@ def main(sender=send):
             if mode!='off':sender(token,chat,message+'\n실행 내역: https://github.com/drkim7/portfolio-collector/actions')
             state['health']=health;save(path,state,password)
         print('Notification health check complete.');return
-    patch=json.loads(decrypt(json.loads(Path('site/quotes-patch.enc').read_text()),password))
+    patch=published_patch if published_patch is not None else json.loads(decrypt(json.loads(Path('site/quotes-patch.enc').read_text()),password))
     holdings,limits,fx=load_holdings();now=datetime.now(timezone.utc)
     if state.get('lastEvaluatedAt'):
         try:restart=(now-datetime.fromisoformat(state['lastEvaluatedAt'])).total_seconds()>20*86400

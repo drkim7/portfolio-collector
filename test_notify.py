@@ -221,3 +221,38 @@ class SmartDelivery(unittest.TestCase):
    finally:os.chdir(cwd)
 
 if __name__=='__main__':unittest.main()
+
+class FinancialNotices(unittest.TestCase):
+ def data(self,receipt='20260814000001'):
+  return {'financials':{'status':'complete','companies':[{'code':'000001','name':'DO-NOT-SEND','reports':[{'meta':{'code':'000001','bsnsYear':'2026','reprtCode':'11012'},'response':{'list':[{'rcept_no':receipt,'thstrm_amount':'PRIVATE-NUMBER'}]}}]}]}}
+ def test_baseline_changed_receipt_retry_and_no_private_values(self):
+  from notify import financial_notice_step
+  s,n=financial_notice_step({},self.data());self.assertIsNone(n)
+  again,n=financial_notice_step(s,self.data());self.assertIsNone(n)
+  changed,n=financial_notice_step(again,self.data('20260815000001'));self.assertIn('1종목',n)
+  self.assertNotIn('DO-NOT-SEND',n);self.assertNotIn('PRIVATE-NUMBER',n);self.assertNotIn('000001',n)
+  retry,n=financial_notice_step(changed,self.data('20260815000001'));self.assertIn('1종목',n)
+  retry['financialPending']=[];done,n=financial_notice_step(retry,self.data('20260815000001'));self.assertIsNone(n)
+ def test_no_filing_change_for_amount_only_update_and_no_key_keeps_cursor(self):
+  from notify import financial_notice_step
+  s,_=financial_notice_step({},self.data());p=self.data();p['financials']['companies'][0]['reports'][0]['response']['list'][0]['thstrm_amount']='another'
+  _,n=financial_notice_step(s,p);self.assertIsNone(n)
+  p['financials']['status']='setup-required';same,n=financial_notice_step(s,p);self.assertEqual(same,s);self.assertIsNone(n)
+ def test_main_waits_for_publication_and_retries_failed_send_without_quote_success(self):
+  import tempfile,os,json
+  from pathlib import Path
+  from unittest.mock import patch as mockpatch,Mock
+  from notify import main,save,financial_notice_step
+  from pipeline import encrypt,decrypt
+  cwd=os.getcwd();password='fixture-password';env={'TELEGRAM_BOT_TOKEN':'fixture','TELEGRAM_CHAT_ID':'fixture','REPORT_PASSWORD':password,'COLLECTION_OUTCOME':'failure','DEPLOY_OUTCOME':'success','V28_ALERT_MODE':'shadow'}
+  with tempfile.TemporaryDirectory() as tmp:
+   try:
+    os.chdir(tmp);Path('site').mkdir();state,_=financial_notice_step({'schemaVersion':28,'initialized':True,'rules':{},'sent':[],'pending':[],'health':'collection_failed'},self.data());save(Path('state/alerts.enc'),state,password)
+    Path('site/quotes-patch.enc').write_text(json.dumps(encrypt(json.dumps(self.data('20260815000001')),password)))
+    sender=Mock(side_effect=RuntimeError('send failed'))
+    with mockpatch.dict(os.environ,env,clear=True):
+     with self.assertRaises(RuntimeError):main(sender)
+     kept=json.loads(decrypt(json.loads(Path('state/alerts.enc').read_text()),password));self.assertEqual(len(kept['financialPending']),1)
+     sender=Mock();main(sender);self.assertEqual(sender.call_count,1);self.assertIn('실적 새로 수집',sender.call_args.args[2]);main(sender);self.assertEqual(sender.call_count,1)
+     env['DEPLOY_OUTCOME']='failure';os.environ['DEPLOY_OUTCOME']='failure';Path('site/quotes-patch.enc').write_text(json.dumps(encrypt(json.dumps(self.data('20260816000001')),password)));sender=Mock();main(sender);self.assertFalse(any('실적 새로 수집' in call.args[2] for call in sender.call_args_list))
+   finally:os.chdir(cwd)
